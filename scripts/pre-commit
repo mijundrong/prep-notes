@@ -1,0 +1,103 @@
+#!/usr/bin/env node
+// pre-commit 훅: 평문 데이터와 테스트용 암호문이 커밋되는 것을 막는다.
+// 설치: cp scripts/pre-commit .git/hooks/pre-commit   (macOS·Linux는 chmod +x .git/hooks/pre-commit)
+//
+// 막는 조건
+//   1. 스테이징된 파일 이름에 interview_data 가 들어 있다
+//   2. 스테이징된 파일 내용에 평문 JSON의 최상위 키 문자열이 들어 있다
+//   3. 커밋될 data.enc.json이 테스트 비밀번호 local-test-only로 복호화된다
+'use strict';
+
+const { execFileSync } = require('node:child_process');
+const { webcrypto } = require('node:crypto');
+
+const TEST_PASSWORD = 'local-test-only';
+// 이 파일 자체가 조건 2에 걸리지 않도록 검사 문자열을 조립한다.
+const NEEDLES = ['cards', 'positioning'].map((key) => '"' + key + '":');
+
+function git(args) {
+  return execFileSync('git', args, { maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+function stagedFiles() {
+  return git(['-c', 'core.quotepath=off', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRT'])
+    .toString('utf8')
+    .split('\0')
+    .filter(Boolean);
+}
+
+function indexBlob(path) {
+  try {
+    return git(['show', ':' + path]);
+  } catch {
+    return null;
+  }
+}
+
+// 'opened' | 'locked' | 'invalid'
+async function tryTestPassword(text) {
+  let env;
+  try {
+    env = JSON.parse(text);
+  } catch {
+    return 'invalid';
+  }
+  if (!env || !Number.isInteger(env.iter) || ![env.salt, env.iv, env.ct].every((s) => typeof s === 'string' && s)) {
+    return 'invalid';
+  }
+  const bytes = (s) => new Uint8Array(Buffer.from(s, 'base64'));
+  const { subtle } = webcrypto;
+  const material = await subtle.importKey('raw', new TextEncoder().encode(TEST_PASSWORD), 'PBKDF2', false, ['deriveKey']);
+  const key = await subtle.deriveKey(
+    { name: 'PBKDF2', salt: bytes(env.salt), iterations: env.iter, hash: 'SHA-256' },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['decrypt'],
+  );
+  try {
+    await subtle.decrypt({ name: 'AES-GCM', iv: bytes(env.iv) }, key, bytes(env.ct));
+    return 'opened';
+  } catch {
+    return 'locked';
+  }
+}
+
+async function main() {
+  const problems = [];
+
+  for (const name of stagedFiles()) {
+    if (name.toLowerCase().includes('interview_data')) {
+      problems.push(`파일 이름에 interview_data가 들어 있음: ${name}`);
+    }
+    const blob = indexBlob(name);
+    if (!blob) continue;
+    for (const needle of NEEDLES) {
+      if (blob.includes(Buffer.from(needle, 'utf8')) || blob.includes(Buffer.from(needle, 'utf16le'))) {
+        problems.push(`평문 JSON으로 보이는 내용(${needle})이 들어 있음: ${name}`);
+      }
+    }
+  }
+
+  const enc = indexBlob('data.enc.json');
+  if (enc) {
+    const result = await tryTestPassword(enc.toString('utf8'));
+    if (result === 'opened') {
+      problems.push('data.enc.json이 테스트 비밀번호(local-test-only)로 열림 — 실제 비밀번호로 다시 암호화하세요: node scripts/encrypt.mjs');
+    } else if (result === 'invalid') {
+      problems.push('data.enc.json 형식이 올바르지 않음');
+    }
+  }
+
+  if (problems.length) {
+    console.error('[pre-commit] 커밋을 막았습니다.');
+    for (const p of problems) console.error('  - ' + p);
+    console.error('  스테이징 취소: git restore --staged <파일>  (첫 커밋 전이면 git rm --cached <파일>)');
+    process.exit(1);
+  }
+}
+
+main().catch((error) => {
+  console.error('[pre-commit] 검사 중 오류가 나서 커밋을 막았습니다: ' + (error && error.message ? error.message : error));
+  process.exit(1);
+});
