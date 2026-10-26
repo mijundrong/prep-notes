@@ -6,18 +6,56 @@
 
 1. 새 `interview_data.json`을 이 폴더에 덮어쓴다 (커밋하지 않는다 — `.gitignore`와 pre-commit 훅이 막는다)
 2. `node scripts/check.mjs`
-3. `node scripts/encrypt.mjs` (같은 비밀번호)
-4. `git add data.enc.json && git commit -m "update data" && git push`
+3. `node scripts/encrypt.mjs` (같은 비밀번호) — 방어선이 바뀌었으면 `assets/lint-terms.js`도 함께 다시 만든다
+4. `git add data.enc.json assets/lint-terms.js && git commit -m "update data" && git push`
 
 - 비밀번호를 바꾸려면 3번에서 새 비밀번호를 입력한다. 이미 "이 기기에서 기억하기"를 켠 기기는 다시 잠금 해제해야 한다.
 - 같은 비밀번호로 다시 암호화하면 salt를 그대로 쓰므로 기억된 기기는 그대로 열린다.
 - 3번은 PowerShell·명령 프롬프트·Windows Terminal에서 실행한다 (입력이 화면에 `*`로만 보인다). Git Bash에서는 `winpty node scripts/encrypt.mjs`.
+
+## 로컬 점검 (답변칸 아래 경고)
+
+답을 쓰면 Claude 없이 코드로만 바로 점검한다: 방어선 어구, 확정 자료에 없는 숫자, 글자 수와 말하기 시간(분당 300~350자).
+
+방어선 어구 사전은 손으로 정리한 `lint-terms.json`(평문, 커밋하지 않음)이 원본이다. 공개 저장소에는 암호화한 `assets/lint-terms.js`만 올린다.
+키는 비밀번호가 아니라 `interview_data.json`의 방어선 원문에서 만들므로, 데이터를 연 사람만 열 수 있고 비밀번호 없이 다시 만들 수 있다.
+
+- 사전을 고친 뒤: `node scripts/lint-terms.mjs`
+- 맞는지 확인: `node scripts/lint-terms.mjs --check`
+- 원본을 잃었을 때: `node scripts/lint-terms.mjs --extract` (지금 `interview_data.json`으로 열리는 경우)
+
+## 제출과 면접 전 리포트
+
+- 서류 해부 4문은 문항마다 "제출하기"로 제출본을 남긴다. 제출 뒤 고치면 다시 제출할 수 있다.
+- 상단 "리포트"는 내가 쓴 글(정의하기·말하기 내 버전·기둥 내 문장·제출본·꼬리질문·압박 문항 답)과 이미 받아 둔 결과(엮기·카드 코멘트), 방어선, 남은 점검 경고를 한 화면에 모은다. 이 화면은 Claude를 부르지 않는다. 인쇄하거나 HTML 파일 하나로 저장할 수 있다 (평문이니 공개된 곳에 올리지 않는다).
+
+## claude.ai판
+
+같은 코드를 claude.ai 비공개 아티팩트로도 연다. 그 안에서만(`window.claude`가 있을 때) 다음이 켜진다. GitHub Pages판에서는 숨겨지고 외부 요청이 없다.
+
+- 엮기 탭: 쓴 답 전체를 축(왜·뭐·배움·입사 후)마다 비슷한 경험끼리 묶고, 묶음을 흐름으로 엮는다. Claude가 인용한 구간은 코드로 내 답의 부분 문자열인지 확인하고 아니면 버린다. 묶음의 의미와 정의 네 문단은 직접 쓴다.
+- 카드 코멘트: 4문을 모두 제출하면 Claude가 그 카드의 제출본을 확정 사실·주의·방어선과 대조하고 4문끼리 부딪히는 곳만 짚는다. 평가·첨삭은 하지 않고, 인용은 코드로 확인한다.
+- 물어보기: 쓴 답 전체와 엮기 결과를 아는 Claude와 대화한다.
+- 동기화: 답과 엮기 결과를 계정의 비공개 저장소에 두어 PC와 휴대폰이 맞춰진다.
 
 ## 답변은 기기마다 따로 저장된다
 
 답변·상태·체크·메모는 각 기기의 브라우저(localStorage)에만 평문으로 저장되고 서버로는 가지 않는다.
 기기 사이를 옮기는 방법은 백업뿐이다: 상단 "내보내기 → 백업 파일 다운로드" → 다른 기기에서 "가져오기"(병합 또는 덮어쓰기).
 백업 파일도 평문이므로 이 저장소에 넣지 않는다.
+
+## 시험
+
+- 시험은 테스트 비밀번호로 만든 **사본**으로만 한다. 사본은 저장소 밖 임시 폴더에 두고, 방어선 어구 사전은 건드리지 않는다:
+  `PREP_PASS=local-test-only node scripts/encrypt.mjs --skip-lint-terms --out <임시폴더>/data.enc.json --pass-env PREP_PASS`
+- 테스트 비밀번호 사본은 pre-commit 훅이 커밋을 막는다.
+- 이 PC에는 커밋하지 않는 `.local/tests/`에 시험이 있다: `node .local/tests/run.mjs`
+
+## 알려진 한계
+
+- **숫자 점검**: 확정 숫자 대조는 데이터의 날짜·소수를 조각으로 나눠 "아는 숫자"에 넣는다. 그래서 작은 숫자는 대부분 통과한다(예: 데이터에 4.20이 있으면 "20"은 걸리지 않는다). 처음 보는 큰 숫자를 잡는 용도로 쓴다.
+- **공개 파일의 이름**: 화면 제목과 `scripts/check.mjs`의 키 이름에 지원 회사·직무를 짐작할 수 있는 말이 있다. 이미 공개 기록에 남아 있어 지금 고쳐도 지워지지 않는다.
+- **사전 원본 보호**: pre-commit 훅은 `lint-terms.json`을 강제로(`git add -f`) 넣는 경우를 내용으로 잡지 못한다. `.gitignore`에만 기댄다.
 
 ## 새로 클론했을 때
 
@@ -34,7 +72,9 @@ Node 18 이상만 있으면 된다. `npm install`은 필요 없다.
 | 경로 | 내용 |
 |---|---|
 | `index.html`, `assets/` | 사이트. 순수 HTML·CSS·JavaScript, 빌드 단계 없음, 외부 요청 없음 |
+| `assets/lint-terms.js` | 암호화한 방어선 어구 사전 (생성 파일) |
 | `data.enc.json` | 암호화된 데이터. PBKDF2-HMAC-SHA256 600,000회 + AES-256-GCM |
 | `scripts/check.mjs` | 평문 스키마·개수·개인식별정보 패턴 검증 |
-| `scripts/encrypt.mjs` | 평문 → `data.enc.json` |
+| `scripts/encrypt.mjs` | 평문 → `data.enc.json` (방어선 어구 사전도 함께 갱신) |
+| `scripts/lint-terms.mjs` | `lint-terms.json` → `assets/lint-terms.js` |
 | `scripts/pre-commit` | git 훅 |

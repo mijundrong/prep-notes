@@ -48,7 +48,7 @@ function detailView({ data, param }) {
     section({ title: '힌트', id: `${base}-hint` }, para(p.hint)),
     hasItems(p.caution) ? section({ title: '⚠ 주의', cls: 'warn' }, list(p.caution, { idPrefix: `${base}-caution-` })) : null,
     section({ title: '내 답변', id: `${base}-answer` },
-      answerBox({ value: store.pressure(p.id)?.text ?? '', onInput, rows: 6, label: `${p.id} 내 답변` }),
+      answerBox({ value: store.pressure(p.id)?.text ?? '', onInput, rows: 6, label: `${p.id} 내 답변`, check: p.id }),
       h('div', { class: 'answer-tools' }, statusCtl.el, createTimer({ presets: [60, 90, 120] }).el)),
     prevNext(p, items));
 }

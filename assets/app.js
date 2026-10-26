@@ -1,20 +1,28 @@
 // 진입점: 잠금 해제, 헤더, 해시 라우팅, 전역 검색, 내보내기/가져오기.
 // 화면(views/*)이 함께 쓰는 DOM·입력·타이머 도구도 여기서 내보낸다.
+// claude.ai 안에서 열리면(window.claude) 엮기·물어보기와 계정 동기화를 켠다. 그 밖에서는 외부 요청이 없다.
 
 import * as vault from './crypto.js';
 import * as store from './store.js';
+import * as ai from './ai.js';
+import * as lint from './lint.js';
+import * as sync from './sync.js';
 import * as home from './views/home.js';
 import * as positioning from './views/positioning.js';
 import * as job from './views/job.js';
 import * as company from './views/company.js';
 import * as cards from './views/cards.js';
+import * as weave from './views/weave.js';
 import * as pressure from './views/pressure.js';
 import * as glossary from './views/glossary.js';
 import * as study from './views/study.js';
 import * as defense from './views/defense.js';
 import * as drill from './views/drill.js';
+import * as ask from './views/ask.js';
+import * as report from './views/report.js';
 
-const VIEWS = { home, positioning, job, company, cards, pressure, glossary, study, defense, drill };
+const VIEWS = { home, positioning, job, company, cards, weave, pressure, glossary, study, defense, drill, ask, report };
+const AI_ROUTES = new Set(['weave', 'ask']);
 const TAB_ROUTES = {
   포지셔닝: 'positioning',
   '직무 공부': 'job',
@@ -26,14 +34,17 @@ const TAB_ROUTES = {
   방어선: 'defense',
 };
 const DEFAULT_LABELS = {
-  home: '홈', positioning: '포지셔닝', job: '직무 공부', company: '회사 공부', cards: '서류 해부',
+  home: '홈', positioning: '포지셔닝', job: '직무 공부', company: '회사 공부', cards: '서류 해부', weave: '엮기',
   pressure: '압박 문항', glossary: '용어 사전', study: '공부 체크리스트', defense: '방어선', drill: '실전 모드',
+  ask: '물어보기', report: '리포트',
 };
 const SEARCH_SOURCES = ['glossary', 'cards', 'pressure', 'job', 'company', 'defense'];
 const SEARCH_LIMIT = 80;
 const THEME_NEXT = { auto: 'light', light: 'dark', dark: 'auto' };
 const THEME_LABEL = { auto: '테마: 자동', light: '테마: 라이트', dark: '테마: 다크' };
 const TRANSFER_NOTE = 'PC에서 쓴 답을 휴대폰으로 옮기는 방법은 이것뿐입니다: 백업 파일 다운로드 → 다른 기기에서 가져오기.';
+const SYNC_NOTE = '여기서 쓴 답은 claude.ai 계정에 저장되어 PC와 휴대폰에서 자동으로 맞춰집니다. 백업 파일은 GitHub 사이트와 답을 주고받을 때 쓰세요.';
+const SYNC_TEXT = { connecting: '동기화 연결 중…', syncing: '동기화 중…', retry: '동기화 재시도 대기', error: '동기화 안 됨 (이 기기에만 저장)' };
 const MSG_WRONG = '비밀번호가 맞지 않습니다';
 const MSG_NETWORK = '데이터 파일을 불러오지 못했습니다. 연결을 확인하고 다시 시도하세요.';
 const MSG_INSECURE = '이 주소에서는 열 수 없습니다. https 주소(또는 localhost)로 접속하세요.';
@@ -46,6 +57,10 @@ let searchIndex = [];
 let searchTimer = null;
 const cleanups = [];
 const ui = {};
+
+// claude.ai 뷰어 안에서만 존재한다. 기능 객체는 나중에 promise로 온다.
+const viewer = typeof window.claude?.use === 'function' ? window.claude : null;
+const capability = (name) => (viewer ? Promise.resolve(viewer.use(name)).catch(() => null) : Promise.resolve(null));
 
 // ---- DOM 도구 ----
 
@@ -108,6 +123,8 @@ export function kvTable(entries, { id } = {}) {
 }
 
 export const badge = (text, cls) => (nonEmpty(String(text ?? '')) ? h('span', { class: cls ? `badge ${cls}` : 'badge' }, text) : null);
+// Claude가 낸 것: 다른 배경색과 머리표로 원문·내 글과 구분한다.
+export const aiBox = (title, ...children) => h('div', { class: 'ai-out' }, h('p', { class: 'ai-tag' }, title ?? 'Claude 엮기'), ...children);
 export const priorityBadge = (p) => badge(`우선순위 ${p}`, `prio prio-${p}`);
 export const statusBadge = (status) => badge(store.STATUS_LABEL[status] ?? status, `status st-${status}`);
 export const warnBox = (...children) => h('div', { class: 'warn' }, ...children);
@@ -196,16 +213,34 @@ export function autosizeIn(root) {
   for (const area of root.querySelectorAll('textarea')) autosize(area);
 }
 
-export function answerBox({ value = '', onInput, label, placeholder = '', rows = 3, id, compact = false }) {
-  const area = h('textarea', { class: compact ? 'answer compact' : 'answer', rows, placeholder, id, 'aria-label': label });
+// 로컬 점검 경고: 방어선 어구와 확정 자료에 없는 숫자 (lint.js)
+function lintItems(findings) {
+  return findings.map((f) => (f.kind === 'defense'
+    ? h('li', null, h('strong', null, '⚠ 방어선: '), `"${f.term}"`, f.yes ? [' → 이렇게 말한다: ', f.yes] : ' — 방어선 탭에서 확인')
+    : h('li', null, h('strong', null, '⚠ 확정 자료에 없는 숫자: '), f.values.join(', '), f.more ? ` 외 ${f.more}개` : '')));
+}
+
+// 답변칸 아래에는 글자 수·말하기 시간과, check가 있으면 로컬 점검 경고만 둔다.
+// check: true면 어느 카드에도 묶이지 않은 점검, 카드·압박 문항 id면 그 id에만 붙은 어구까지 본다.
+export function answerBox({ value = '', onInput, label, placeholder = '', rows = 3, id, compact = false, check = false, maxlength }) {
+  const area = h('textarea', { class: compact ? 'answer compact' : 'answer', rows, placeholder, id, maxlength, 'aria-label': label });
   area.value = value;
-  const count = h('span', { class: 'count' }, `${charCount(value)}자`);
+  const count = h('span', { class: 'count', title: '말하기 시간은 분당 300~350자 기준' });
+  const notes = check ? h('ul', { class: 'lint', hidden: true }) : null;
+  const paint = (text) => {
+    count.textContent = lint.lengthLine(text);
+    if (!notes) return;
+    const items = lintItems(lint.check(text, typeof check === 'string' ? check : null));
+    notes.replaceChildren(...items);
+    notes.hidden = !items.length;
+  };
   area.addEventListener('input', () => {
-    count.textContent = `${charCount(area.value)}자`;
+    paint(area.value);
     autosize(area);
     onInput(area.value);
   });
-  return h('div', { class: compact ? 'answer-wrap compact' : 'answer-wrap' }, area, compact ? null : h('div', { class: 'answer-meta' }, count));
+  paint(value);
+  return h('div', { class: compact ? 'answer-wrap compact' : 'answer-wrap' }, area, compact ? null : h('div', { class: 'answer-meta' }, count), notes);
 }
 
 // ---- 타이머 ----
@@ -314,12 +349,14 @@ function parseRoute() {
   return { name: m[1], param };
 }
 
-function renderRoute() {
+// keepScroll: 다른 기기에서 온 변경을 반영할 때처럼 같은 화면을 다시 그릴 때 스크롤을 지킨다.
+function renderRoute({ keepScroll = false } = {}) {
   const route = parseRoute();
   if (!route) {
     location.replace('#/home');
     return;
   }
+  const scrollY = window.scrollY;
   while (cleanups.length) {
     try {
       cleanups.pop()();
@@ -346,7 +383,7 @@ function renderRoute() {
   store.setUi({ lastRoute: location.hash });
   autosizeIn(ui.view);
   if (focus) revealFocus(focus);
-  else window.scrollTo(0, 0);
+  else window.scrollTo(0, keepScroll ? scrollY : 0);
 }
 
 function revealFocus({ id, edit }) {
@@ -377,27 +414,35 @@ function buildTabs() {
   for (const route of Object.values(TAB_ROUTES)) {
     if (!list.some((t) => t.route === route)) list.push({ route, label: labels[route] });
   }
+  // 엮기는 meta.tabs 순서와 별개로 서류 해부 다음에 둔다 (claude.ai판에서만 보인다).
+  const at = list.findIndex((t) => t.route === 'cards');
+  list.splice(at < 0 ? list.length : at + 1, 0, { route: 'weave', label: labels.weave, aiOnly: true });
   tabs = list;
 }
 
 function buildHeader() {
   buildTabs();
   ui.saveNote = h('span', { class: 'save-note', 'aria-live': 'polite' });
+  // 방어선 어구 사전이 이 데이터로 열리지 않으면(방어선을 고친 뒤 사전을 다시 만들지 않은 경우) 경고가 꺼진 것을 알린다.
+  ui.lintNote = h('span', { class: 'lint-off', hidden: true, title: '사전을 다시 만들려면 node scripts/lint-terms.mjs' }, '방어선 경고 꺼짐 — node scripts/lint-terms.mjs');
   ui.search = h('input', { type: 'search', class: 'search-input', placeholder: '전체 검색', 'aria-label': '전체 검색', autocomplete: 'off', enterkeyhint: 'search' });
   ui.panel = h('div', { class: 'search-panel', hidden: true, role: 'region', 'aria-label': '검색 결과' });
-  ui.themeBtn = h('button', { type: 'button', class: 'btn', onclick: cycleTheme }, THEME_LABEL[store.get().ui.theme]);
+  // claude.ai 뷰어는 테마를 직접 정해 주므로 그 안에서는 테마 단추를 숨긴다.
+  ui.themeBtn = h('button', { type: 'button', class: 'btn', onclick: cycleTheme, hidden: Boolean(viewer) }, THEME_LABEL[store.get().ui.theme]);
 
   ui.header.replaceChildren(
     h('div', { class: 'bar' },
-      h('div', { class: 'brand' }, h('a', { class: 'site-title', href: '#/home' }, data.meta?.title ?? ''), ui.saveNote),
+      h('div', { class: 'brand' }, h('a', { class: 'site-title', href: '#/home' }, data.meta?.title ?? ''), ui.saveNote, ui.lintNote),
       h('div', { class: 'search-box' }, ui.search),
       h('div', { class: 'tools' },
         h('a', { class: 'btn', href: '#/drill', 'data-route': 'drill' }, labels.drill),
+        h('a', { class: 'btn', href: '#/report', 'data-route': 'report' }, labels.report),
+        h('a', { class: 'btn ai-only', href: '#/ask', 'data-route': 'ask' }, labels.ask),
         h('button', { type: 'button', class: 'btn', onclick: openExport }, '내보내기'),
         h('button', { type: 'button', class: 'btn', onclick: openImport }, '가져오기'),
         ui.themeBtn,
         h('button', { type: 'button', class: 'btn', onclick: lock }, '잠그기'))),
-    h('nav', { class: 'tabs', 'aria-label': '탭' }, tabs.map((t) => h('a', { href: `#/${t.route}`, 'data-route': t.route }, t.label))),
+    h('nav', { class: 'tabs', 'aria-label': '탭' }, tabs.map((t) => h('a', { href: `#/${t.route}`, 'data-route': t.route, class: t.aiOnly ? 'ai-only' : null }, t.label))),
     ui.panel,
   );
 
@@ -450,10 +495,69 @@ function syncBanner() {
 }
 
 const hhmm = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+let syncInfo = null;
 
-function onStoreChange({ savedAt }) {
+function paintSaveNote() {
+  if (!ui.saveNote) return;
+  if (syncInfo) {
+    ui.saveNote.textContent = syncInfo.state === 'synced' ? `동기화됨 ${hhmm(syncInfo.at)}` : (SYNC_TEXT[syncInfo.state] ?? '');
+    return;
+  }
+  const savedAt = store.lastSavedAt();
+  if (savedAt) ui.saveNote.textContent = `저장됨 ${hhmm(savedAt)}`;
+}
+
+function onStoreChange() {
   syncBanner();
-  if (ui.saveNote && savedAt) ui.saveNote.textContent = `저장됨 ${hhmm(savedAt)}`;
+  paintSaveNote();
+}
+
+// 화면 아래에 잠깐 뜨는 알림. action이 있으면 단추를 붙이고 저절로 사라지지 않는다.
+export function showToast(text, action) {
+  ui.toast?.remove();
+  const toast = h('div', { class: 'toast', role: 'status' }, h('span', null, text),
+    action ? h('button', { type: 'button', class: 'btn small', onclick: () => { toast.remove(); action.run(); } }, action.label) : null,
+    h('button', { type: 'button', class: 'btn small', 'aria-label': '알림 닫기', onclick: () => toast.remove() }, '닫기'));
+  document.body.append(toast);
+  ui.toast = toast;
+  if (!action) setTimeout(() => toast.remove(), 6000);
+}
+
+// 다른 기기에서 바뀐 내용이 들어왔을 때: 입력 중이 아니면 같은 화면을 다시 그린다.
+function onRemoteChange() {
+  const route = parseRoute();
+  if (!route || route.name === 'drill') return;
+  const typing = document.activeElement?.matches?.('#view textarea, #view input');
+  if (typing || document.querySelector('dialog[open]')) {
+    showToast('다른 기기에서 바뀐 내용을 받았습니다.', { label: '새로 보기', run: () => renderRoute({ keepScroll: true }) });
+    return;
+  }
+  renderRoute({ keepScroll: true });
+}
+
+async function connectViewer() {
+  if (!viewer) return;
+  const [sample, db, user, downloads] = await Promise.all(['sample', 'db', 'user', 'downloads'].map(capability));
+  ui.downloads = downloads;
+  ai.onNotice((text) => showToast(text));
+  // Claude를 쓸 수 있게 되거나(또는 거절돼 숨기면) 엮기·물어보기 화면을 다시 그린다.
+  ai.onChange(() => {
+    if (AI_ROUTES.has(parseRoute()?.name)) renderRoute({ keepScroll: true });
+  });
+  ai.init(sample);
+  const started = await sync.start({
+    db,
+    user,
+    onRemoteChange,
+    onStatusChange: (info) => {
+      syncInfo = info;
+      paintSaveNote();
+    },
+  }).catch(() => false);
+  if (!started) {
+    syncInfo = null;
+    paintSaveNote();
+  }
 }
 
 // ---- 전역 검색 ----
@@ -539,11 +643,11 @@ function runSearch(query) {
       hits.push({ entry, fields: fields.filter((f) => f.text !== entry.plain), focus: (fields[0] ?? entry.fields[0])?.focus });
     }
   }
-  ui.panel.replaceChildren(
+  ui.panel.replaceChildren(...filled([
     h('p', { class: 'search-summary' }, hits.length ? `“${q}” — ${hits.length}건` : `“${q}” — 결과 없음`),
     h('ul', { class: 'search-list' }, hits.slice(0, SEARCH_LIMIT).map((hit) => resultItem(hit, q))),
     hits.length > SEARCH_LIMIT ? h('p', { class: 'small faint' }, `처음 ${SEARCH_LIMIT}건만 보여 줍니다. 검색어를 더 구체적으로 입력하세요.`) : null,
-  );
+  ]));
   ui.panel.hidden = false;
 }
 
@@ -572,11 +676,32 @@ function closeSearch() {
 
 // ---- 내보내기 / 가져오기 ----
 
+// 파일 저장. claude.ai 안에서는 페이지가 직접 내려받기를 할 수 없어 저장 확인 창(downloads)을 거친다. 결과 문구를 돌려준다.
+export async function saveFile({ name, body, type }) {
+  if (viewer) {
+    if (!ui.downloads) return '이 화면에서는 파일을 저장할 수 없습니다.';
+    try {
+      const res = await ui.downloads.save({ filename: name, data: body });
+      // delivered: 저장이 아니라 고른 곳으로 넘긴 것이라 "저장했습니다"라고 하지 않는다.
+      return res?.status === 'delivered' ? '저장 위치를 고르는 창으로 넘겼습니다.' : `${name} 파일을 저장했습니다.`;
+    } catch (e) {
+      return e?.code === 'declined' ? '저장을 취소했습니다.' : '파일을 저장하지 못했습니다. 잠시 뒤 다시 눌러 주세요.';
+    }
+  }
+  const url = URL.createObjectURL(new Blob([body], { type }));
+  const a = h('a', { href: url, download: name, hidden: true });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  return `${name} 파일을 내려받았습니다.`;
+}
+
 function dialog(title, body) {
   const dlg = h('dialog', { class: 'dialog', 'aria-label': title });
   dlg.append(
     h('div', { class: 'dialog-head' }, h('h2', null, title), h('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, '닫기')),
-    h('p', { class: 'note' }, TRANSFER_NOTE),
+    h('p', { class: 'note' }, sync.isActive() ? SYNC_NOTE : TRANSFER_NOTE),
     ...filled(body),
   );
   dlg.addEventListener('close', () => dlg.remove());
@@ -605,25 +730,19 @@ function openExport() {
     }
   }
 
-  function download() {
+  async function download() {
     const { name, body } = store.backupFile();
-    const url = URL.createObjectURL(new Blob([body], { type: 'application/json' }));
-    const a = h('a', { href: url, download: name, hidden: true });
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    status.textContent = `${name} 파일을 내려받았습니다.`;
+    status.textContent = await saveFile({ name, body, type: 'application/json' });
   }
 
   dialog('내보내기', [
     h('h3', null, 'Markdown 복사 (첨삭 요청용)'),
-    h('p', { class: 'small muted' }, '답을 쓴 카드·문항만 클립보드에 복사합니다.'),
+    h('p', { class: 'small muted' }, '답을 쓴 카드·문항과 엮기 묶음·실·정의하기·내 포지셔닝을 클립보드에 복사합니다.'),
     h('label', { class: 'check' }, withMaterial, h('span', null, '재료 포함 (확정 사실·주의 목록)')),
     h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn primary', onclick: copy }, 'Markdown 복사')),
     fallback,
     h('h3', null, '백업 파일 다운로드'),
-    h('p', { class: 'small muted' }, '이 기기의 답변·상태·체크·메모 전체를 JSON 파일로 저장합니다. 이 파일은 평문이니 공개된 곳에 올리지 마세요.'),
+    h('p', { class: 'small muted' }, '이 기기의 답변·상태·체크·메모·엮기 전체를 JSON 파일로 저장합니다. 이 파일은 평문이니 공개된 곳에 올리지 마세요.'),
     h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: download }, '백업 파일 다운로드')),
     status,
   ]);
@@ -650,33 +769,48 @@ function openImport() {
     const current = store.summarize();
     const when = (d) => (d ? store.formatStamp(d) : '—');
     const rows = [
-      ['서류 해부 4문 답', 'answers'], ['꼬리질문 답', 'followups'], ['압박 문항 답', 'pressure'], ['기둥 내 문장', 'pillars'],
+      ['서류 해부 4문 답', 'answers'], ['제출한 문항', 'submitted'], ['카드 코멘트', 'comments'], ['꼬리질문 답', 'followups'], ['압박 문항 답', 'pressure'], ['기둥 내 문장', 'pillars'],
       ['말하기 내 버전', 'scripts'], ['공부 체크리스트', 'study'], ['확인할 것', 'toConfirm'], ['용어 앎/모름', 'glossary'],
+      ['엮기 묶음', 'clusters'], ['정의하기', 'identity'], ['내 포지셔닝', 'myPositioning'],
     ].map(([label, key]) => [label, String(incoming[key]), String(current[key])]);
     rows.push(['가장 최근 수정', when(incoming.latest), when(current.latest)]);
     const merge = h('input', { type: 'radio', name: 'import-mode', value: 'merge', checked: true });
     const overwrite = h('input', { type: 'radio', name: 'import-mode', value: 'overwrite' });
 
-    const run = () => {
-      const mode = overwrite.checked ? 'overwrite' : 'merge';
-      if (mode === 'overwrite' && !confirm('이 기기의 현재 답변·상태·체크·메모를 모두 백업 파일 내용으로 바꿉니다. 되돌릴 수 없습니다. 계속할까요?')) return;
-      store.applyImport(parsed.state, mode);
+    const apply = (mode) => {
+      // 덮어쓰기는 계정 저장소에서 받아 둔 문서까지 보고, 백업에 없는 칸을 지운 것으로 퍼뜨린다.
+      store.applyImport(parsed.state, mode, { remote: sync.knownDocs() });
       preview.replaceChildren();
       file.value = '';
       status.textContent = mode === 'overwrite' ? '덮어썼습니다.' : '병합했습니다.';
-      renderRoute();
+      renderRoute({ keepScroll: true });
     };
+    const erased = '백업에 없는 답·꼬리질문 답·제출본·카드 코멘트·압박 문항 답·체크·메모·정의하기·내 포지셔닝은 지워집니다';
+    // 덮어쓰기는 페이지 안에서 한 번 더 확인한다 (claude.ai 안에서는 confirm() 창이 뜨지 않는다).
+    const confirmBox = h('div', { class: 'warn confirm-box', hidden: true },
+      h('p', null, sync.isActive()
+        ? `지금 상태를 백업 파일 내용으로 바꿉니다. ${erased}. 계정 저장소와 다른 기기에도 그대로 반영됩니다. 엮기·대조 결과는 백업에 든 것이 최신이 되고, 백업에 없으면 계정에 있던 것이 남습니다. 되돌릴 수 없습니다.`
+        : `이 기기의 지금 상태를 백업 파일 내용으로 바꿉니다. ${erased}. 엮기·대조 결과는 백업에 든 것으로 바뀝니다. 되돌릴 수 없습니다.`),
+      h('div', { class: 'row' },
+        h('button', { type: 'button', class: 'btn primary', onclick: () => apply('overwrite') }, '덮어쓰기'),
+        h('button', { type: 'button', class: 'btn', onclick: () => { confirmBox.hidden = true; } }, '취소')));
+    const run = () => {
+      if (overwrite.checked) confirmBox.hidden = false;
+      else apply('merge');
+    };
+    for (const radio of [merge, overwrite]) radio.addEventListener('change', () => { confirmBox.hidden = true; });
 
-    preview.append(
+    preview.append(...filled([
       h('h3', null, '미리보기'),
       parsed.exportedAt ? h('p', { class: 'small muted' }, `백업을 만든 시각: ${when(new Date(parsed.exportedAt))}`) : null,
       table({ head: ['항목', '백업 파일', '이 기기'], rows }),
       h('fieldset', { class: 'modes' },
         h('legend', null, '가져오는 방식'),
         h('label', { class: 'check' }, merge, h('span', null, h('strong', null, '병합'), ' — 같은 위치의 값은 더 최근에 고친 쪽을 남깁니다 (기본)')),
-        h('label', { class: 'check' }, overwrite, h('span', null, h('strong', null, '덮어쓰기'), ' — 이 기기의 현재 상태를 백업 내용으로 바꿉니다'))),
+        h('label', { class: 'check' }, overwrite, h('span', null, h('strong', null, '덮어쓰기'), ' — 지금 상태를 백업 내용으로 바꾸고, 백업에 없는 답은 지웁니다'))),
       h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn primary', onclick: run }, '가져오기 실행')),
-    );
+      confirmBox,
+    ]));
   });
 
   dialog('가져오기', [
@@ -744,21 +878,28 @@ function start(opened) {
   ui.view = document.getElementById('view');
   buildHeader();
   buildSearchIndex();
-  window.addEventListener('hashchange', renderRoute);
+  window.addEventListener('hashchange', () => renderRoute());
   if (!parseRoute()) {
     const last = store.get().ui.lastRoute;
     history.replaceState(null, '', last?.startsWith('#/') ? last : '#/home');
   }
-  renderRoute();
+  // 방어선 사전을 연 뒤에 그려야 처음 보이는 답에도 경고가 붙는다 (몇 ms).
+  lint.prepare(data).catch(console.error).then(() => {
+    ui.lintNote.hidden = lint.ruleCount() > 0;
+    renderRoute();
+    connectViewer();
+  });
 }
 
 async function boot() {
   store.subscribe(onStoreChange);
   store.load();
-  applyTheme(store.get().ui.theme);
+  if (!viewer) applyTheme(store.get().ui.theme);
   window.addEventListener('pagehide', store.flush);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') store.flush();
+    if (document.visibilityState !== 'hidden') return;
+    store.flush();
+    sync.flushNow();
   });
   document.addEventListener('toggle', (e) => autosizeIn(e.target), true);
   let resizeTimer = null;

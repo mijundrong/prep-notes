@@ -6,6 +6,9 @@
 //   node scripts/encrypt.mjs                        비밀번호를 터미널에서 입력 (화면에는 * 표시)
 //   node scripts/encrypt.mjs --pass-env PREP_PASS   환경변수에서 비밀번호를 읽는다 (로컬 테스트 전용)
 //   --in <path>  --out <path>                       기본값 interview_data.json → data.enc.json
+//   --skip-lint-terms                               assets/lint-terms.js를 건드리지 않는다 (시험용 사본을 만들 때)
+//
+// 입력이 저장소의 interview_data.json이면(경로 표기와 상관없이) 방어선 어구 사전 assets/lint-terms.js도 함께 갱신한다.
 //
 // 같은 비밀번호로 다시 암호화하면 기존 salt를 유지한다. 그래야 "이 기기에서 기억하기"로
 // 저장된 키가 데이터 갱신 후에도 그대로 맞는다. 비밀번호가 바뀌면 salt를 새로 만든다.
@@ -15,13 +18,14 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import readline from 'node:readline';
 import { validate } from './check.mjs';
+import { updateSealed, sealedOpens, isDataPath } from './lint-terms.mjs';
 
 const { subtle } = webcrypto;
 const ITER = 600000;
 const MIN_LENGTH = 12;
 const TEST_PASSWORD = 'local-test-only';
 
-const HELP = `사용: node scripts/encrypt.mjs [--in interview_data.json] [--out data.enc.json] [--pass-env VAR]`;
+const HELP = `사용: node scripts/encrypt.mjs [--in interview_data.json] [--out data.enc.json] [--pass-env VAR] [--skip-lint-terms]`;
 
 function fail(message) {
   console.error(message);
@@ -29,7 +33,7 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
-  const opts = { in: 'interview_data.json', out: 'data.enc.json', passEnv: null };
+  const opts = { in: 'interview_data.json', out: 'data.enc.json', passEnv: null, skipLintTerms: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = () => {
@@ -40,6 +44,7 @@ function parseArgs(argv) {
     if (arg === '--in') opts.in = value();
     else if (arg === '--out') opts.out = value();
     else if (arg === '--pass-env') opts.passEnv = value();
+    else if (arg === '--skip-lint-terms') opts.skipLintTerms = true;
     else if (arg === '-h' || arg === '--help') {
       console.log(HELP);
       process.exit(0);
@@ -207,6 +212,25 @@ async function main() {
     : '  salt: 새로 생성 — "이 기기에서 기억하기"를 켠 기기는 다시 잠금 해제해야 합니다.');
   if (password === TEST_PASSWORD) {
     console.log('  주의: 테스트 비밀번호로 암호화했습니다. 이 파일은 pre-commit 훅이 커밋을 막습니다.');
+  }
+
+  // 방어선 어구 사전(assets/lint-terms.js)의 키는 방어선 원문에서 나온다. 방어선이 바뀌면 여기서 함께 다시 만든다.
+  if (opts.skipLintTerms) {
+    console.log('  assets/lint-terms.js: 건너뜀 (--skip-lint-terms)');
+    return;
+  }
+  if (!isDataPath(inPath)) {
+    console.log('  assets/lint-terms.js: 건너뜀 (입력이 저장소의 interview_data.json이 아님)');
+    return;
+  }
+  const lint = await updateSealed(data);
+  if (lint.errors.length) {
+    console.error('  주의: lint-terms.json 검사 실패 — assets/lint-terms.js를 갱신하지 않았습니다.');
+    for (const e of lint.errors) console.error(`    - ${e}`);
+  } else if (lint.missing) {
+    if (!(await sealedOpens(data))) console.log('  주의: lint-terms.json이 없고 assets/lint-terms.js가 이 데이터로 열리지 않습니다 — 방어선 어구 경고가 꺼집니다.');
+  } else {
+    console.log(lint.changed ? '  assets/lint-terms.js: 갱신 — data.enc.json과 함께 커밋하세요.' : '  assets/lint-terms.js: 변경 없음');
   }
 }
 

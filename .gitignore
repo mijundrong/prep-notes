@@ -6,7 +6,11 @@ prep-backup-*.json
 
 # 작업 지시서·개인 작업 파일 (회사명이 들어 있어 공개 저장소에 올리지 않는다)
 PROMPT.md
+WEAVE.md
 Claude outputs/
+
+# 방어선 어구 사전 원본 (평문). 공개되는 것은 암호화한 assets/lint-terms.js뿐이다
+lint-terms.json
 
 node_modules/
 .DS_Store

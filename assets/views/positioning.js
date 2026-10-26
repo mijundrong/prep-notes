@@ -1,7 +1,8 @@
 import {
-  h, nonEmpty, hasItems, para, section, list, table, badge, warnBox, collapsible, chipRow, answerBox, createTimer, tabLabel,
+  h, nonEmpty, hasItems, para, section, list, table, badge, warnBox, collapsible, chipRow, answerBox, createTimer, tabLabel, go,
 } from '../app.js';
 import * as store from '../store.js';
+import { versionId as domId } from '../weave-model.js';
 import { spineLines } from './home.js';
 
 const GRADES = ['강', '중~강', '중', '약', '없음'];
@@ -14,6 +15,26 @@ const gradeFilter = new Set();
 
 const emph = (text, id) => (nonEmpty(text) ? h('p', { class: 'emph', id }, text) : null);
 const gradeBadge = (grade) => badge(grade, `grade ${GRADE_CLASS[grade] ?? 'grade-none'}`);
+
+// 엮기의 "포지셔닝과 대조"에서 받아들인 내 버전이 있으면 위에, 원문은 접어서 아래에 둔다. 원문 JSON은 그대로다.
+// back: 되돌린 뒤 보여 줄 자리 (내 버전 블록은 되돌리면 없어진다)
+function originalPart(target, back, node) {
+  return h('div', { class: 'original-row' },
+    collapsible('원문 보기', node, { cls: 'original' }),
+    h('button', {
+      type: 'button', class: 'btn small',
+      onclick: () => {
+        store.setMyPositioning(target, '');
+        go('#/positioning', back);
+      },
+    }, '원문으로 되돌리기'));
+}
+
+function versioned(target, original, show, back) {
+  const mine = store.myPositioning(target);
+  if (!mine || !nonEmpty(original)) return show(original);
+  return h('div', { class: 'my-version', id: domId(target) }, h('p', { class: 'mine-label' }, '내 버전'), show(mine.text), originalPart(target, back, show(original)));
+}
 
 function spineBlock(spine) {
   if (!spine) return null;
@@ -48,7 +69,10 @@ function needsBlock(items) {
 
 function thesisBlock(v) {
   if (!v) return null;
-  return section('한 줄 명제', emph(v.core), para(v.layer), para(v.note, { class: 'small faint' }));
+  return section({ title: '한 줄 명제', id: 'pos-thesis' },
+    versioned('thesis.core', v.core, (t) => emph(t), 'pos-thesis'),
+    versioned('thesis.layer', v.layer, (t) => para(t), 'pos-thesis'),
+    para(v.note, { class: 'small faint' }));
 }
 
 function evidenceBlock(items) {
@@ -67,24 +91,35 @@ function evidenceBlock(items) {
 }
 
 function whyNowBlock(items, line) {
-  return section('Why Now',
+  return section({ title: 'Why Now', id: 'pos-why-now' },
     table({ head: ['지금', '필요한 사람', '나'], rows: (items ?? []).map((w) => [w.now, w.need, w.me]) }),
-    emph(line));
+    versioned('why_now_line', line, (t) => emph(t), 'pos-why-now'));
 }
 
 function pillarsBlock(pillars) {
   if (!pillars?.length) return null;
   return section('다섯 기둥', h('ol', { class: 'pillars' }, pillars.map((p) => {
     const inputId = `pillar-input-${p.n}`;
+    const titleTarget = `pillars[${p.n}].title`;
+    const myTitle = nonEmpty(p.title) ? store.myPositioning(titleTarget) : null;
     return h('li', { class: 'pillar', id: `pillar-${p.n}` },
       h('p', { class: 'pillar-head' },
         h('span', { class: 'pillar-n' }, store.circled(p.n)), ' ',
-        nonEmpty(p.title) ? h('strong', null, p.title) : null, ' ',
-        badge(p.role, 'role')),
+        nonEmpty(p.title) ? h('strong', null, myTitle ? myTitle.text : p.title) : null, ' ',
+        badge(p.role, 'role'),
+        myTitle ? [' ', badge('내 버전', 'mine-badge')] : null),
+      myTitle ? h('div', { id: domId(titleTarget) }, originalPart(titleTarget, `pillar-${p.n}`, h('p', null, p.title))) : null,
       para(p.evidence),
-      nonEmpty(p.line) ? h('blockquote', { class: 'quote' }, p.line) : null,
+      versioned(`pillars[${p.n}].line`, p.line, (t) => (nonEmpty(t) ? h('blockquote', { class: 'quote' }, t) : null), `pillar-${p.n}`),
       h('label', { class: 'input-label', for: inputId }, '내 문장으로'),
-      answerBox({ id: inputId, value: store.pillarText(p.n), onInput: (v) => store.setPillar(p.n, v), rows: 2, label: `기둥 ${p.n} 내 문장` }));
+      answerBox({
+        id: inputId,
+        value: store.pillarText(p.n),
+        onInput: (v) => store.setPillar(p.n, v),
+        rows: 2,
+        label: `기둥 ${p.n} 내 문장`,
+        check: true,
+      }));
   })));
 }
 
@@ -128,7 +163,14 @@ function scriptsBlock(scripts) {
       h('h3', null, label),
       collapsible('뼈대 원문', h('p', null, scripts[key]), { open: true, cls: 'skeleton' }),
       h('label', { class: 'input-label', for: inputId }, '내 버전'),
-      answerBox({ id: inputId, value: store.scriptText(key), onInput: (v) => store.setScript(key, v), rows: 6, label: `${label} 내 버전` }),
+      answerBox({
+        id: inputId,
+        value: store.scriptText(key),
+        onInput: (v) => store.setScript(key, v),
+        rows: 6,
+        label: `${label} 내 버전`,
+        check: true,
+      }),
       createTimer({ presets: [seconds] }).el);
   });
   return section('말하기 뼈대', nonEmpty(scripts.note) ? warnBox(h('p', null, scripts.note)) : null, parts);
