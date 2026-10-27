@@ -571,7 +571,7 @@ progress::-moz-progress-bar { background: var(--accent); }
 
 /* ---- 엮기 ---- */
 
-/* Claude가 낸 것: 다른 배경색 + "Claude 엮기" 머리표 */
+/* Claude가 낸 것: 다른 배경색 + "Claude 엮기"·"Claude 렌즈"·"Claude 보고서" 머리표 */
 .ai-out { background: var(--ai-bg); border-left: 3px solid var(--ai-line); border-radius: 0 var(--radius) var(--radius) 0; padding: 2px 12px 8px; margin: 8px 0; }
 .ai-tag { font-size: .75rem; font-weight: 700; letter-spacing: .02em; color: var(--ai-text); margin: 4px 0 2px; }
 .ai-out h3 { font-size: .95rem; margin: 1em 0 .3em; }
@@ -643,7 +643,35 @@ details.archived-box { margin: 12px 0 4px; }
 .proposal-edit { margin: 6px 0; }
 .decision { color: var(--accent-text); }
 
-/* ---- 면접 전 리포트 ---- */
+/* ---- 직무·회사 렌즈 ---- */
+
+.lens-summary { font-weight: 600; }
+.coverage { list-style: none; padding: 0; margin: 8px 0; }
+.coverage-row { margin: 0; padding: 10px 0 12px; border-top: 1px solid var(--line); }
+.coverage-row.gap { border-left: 3px solid var(--warn); padding-left: 10px; }
+.coverage-jd { margin: 0 0 4px; }
+.gap-note { color: var(--warn-text); }
+.touch-list { list-style: none; padding: 0; margin: 8px 0; }
+.touch-row { margin: 0; padding: 8px 0; border-top: 1px solid var(--line); }
+.touch-row > p { margin: 0 0 4px; }
+.lens-material { padding-left: 1.2em; margin: 4px 0; }
+.lens-material p { margin: 2px 0; }
+
+/* ---- 최종 보고서 ---- */
+
+.version-select { max-width: 100%; min-height: 36px; }
+.final-report { margin-top: 12px; }
+.final-report h1 { font-size: 1.4rem; }
+.final-report h2 { margin-top: 1.6em; }
+.final-report h3 { margin-top: 1em; }
+.final-sec.changed > h2 { border-bottom-color: var(--accent); }
+.badge.changed-badge { margin-left: 8px; font-size: .75rem; font-weight: 600; border-color: var(--accent); color: var(--accent-text); vertical-align: middle; }
+blockquote.verbatim { margin: 8px 0 12px; padding: 4px 12px; border-left-color: var(--accent); background: var(--bg-sunk); }
+blockquote.verbatim p { margin: 0; }
+table.final-table { font-size: .9rem; }
+table.final-table td:first-child { min-width: 3em; }
+
+/* ---- 자료 모음 ---- */
 
 .report-summary { font-weight: 600; }
 .report-item { margin: 10px 0 18px; }
@@ -676,6 +704,8 @@ blockquote.prompt-small { font-weight: 600; border-left-color: var(--accent); }
   border: 1px solid var(--line-strong); border-radius: var(--radius);
 }
 .toast span { flex: 1 1 200px; font-size: .9rem; }
+/* 알림이 떠 있는 동안: 알림 높이 + 아래 간격만큼 화면 아래 여백을 늘려, 맨 아래 단추도 알림 위로 스크롤된다 */
+body.has-toast .view { padding-bottom: max(96px, calc(var(--toast-space, 0px) + 40px + env(safe-area-inset-bottom, 0px))); }
 
 /* ---- 검색·포커스 이동 강조 ---- */
 
@@ -686,6 +716,8 @@ blockquote.prompt-small { font-weight: 600; border-left-color: var(--accent); }
 }
 
 /* ---- 인쇄: 네비게이션·입력칸 없이 ---- */
+
+@page { margin: 13mm 12mm; }
 
 @media print {
   :root, :root:not([data-theme="light"]), :root[data-theme="dark"] {
@@ -710,4 +742,17 @@ blockquote.prompt-small { font-weight: 600; border-left-color: var(--accent); }
   thead { display: table-header-group; }
   details > summary { display: none; }
   .badge, .facts, .mine, .my-version, .ai-out, .ai-quote, .lint, tr.star > td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .no-print { display: none !important; }
+  /* 최종 보고서: 섹션마다 쪽을 나누지 않고 촘촘하게, 표는 쪽 너비에 맞게 */
+  .final-report { margin: 0; }
+  .final-report h1 { font-size: 15pt; margin: 0 0 3pt; }
+  .final-report h2 { font-size: 12.5pt; margin: 11pt 0 4pt; padding-bottom: 2pt; }
+  .final-report h3 { font-size: 11pt; margin: 7pt 0 2pt; }
+  .final-report p, .final-report li { margin: 2pt 0; }
+  .final-report ul, .final-report ol { margin: 2pt 0; }
+  .final-report .table-wrap { margin: 4pt 0 6pt; border: 0; }
+  .final-report table { font-size: 9pt; line-height: 1.4; table-layout: auto; }
+  .final-report th, .final-report td { padding: 2.5pt 4pt; border: 1px solid var(--line); }
+  .final-report thead th { white-space: normal; }
+  .final-report blockquote.verbatim { margin: 3pt 0 5pt; padding: 2pt 8pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }

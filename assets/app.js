@@ -20,9 +20,10 @@ import * as defense from './views/defense.js';
 import * as drill from './views/drill.js';
 import * as ask from './views/ask.js';
 import * as report from './views/report.js';
+import * as final from './views/final.js';
 
-const VIEWS = { home, positioning, job, company, cards, weave, pressure, glossary, study, defense, drill, ask, report };
-const AI_ROUTES = new Set(['weave', 'ask']);
+const VIEWS = { home, positioning, job, company, cards, weave, pressure, glossary, study, defense, drill, ask, report, final };
+const AI_ROUTES = new Set(['weave', 'ask', 'final']);
 const TAB_ROUTES = {
   포지셔닝: 'positioning',
   '직무 공부': 'job',
@@ -36,7 +37,7 @@ const TAB_ROUTES = {
 const DEFAULT_LABELS = {
   home: '홈', positioning: '포지셔닝', job: '직무 공부', company: '회사 공부', cards: '서류 해부', weave: '엮기',
   pressure: '압박 문항', glossary: '용어 사전', study: '공부 체크리스트', defense: '방어선', drill: '실전 모드',
-  ask: '물어보기', report: '리포트',
+  ask: '물어보기', report: '자료 모음', final: '최종 보고서',
 };
 const SEARCH_SOURCES = ['glossary', 'cards', 'pressure', 'job', 'company', 'defense'];
 const SEARCH_LIMIT = 80;
@@ -513,14 +514,32 @@ function onStoreChange() {
 }
 
 // 화면 아래에 잠깐 뜨는 알림. action이 있으면 단추를 붙이고 저절로 사라지지 않는다.
+// 떠 있는 동안에는 화면 아래에 알림 높이만큼 여백을 둔다 — 맨 아래 단추도 스크롤해서 알림 위로 올릴 수 있게.
 export function showToast(text, action) {
-  ui.toast?.remove();
+  ui.toast?.dismiss();
+  let observer = null;
+  const root = document.documentElement;
+  const dismiss = () => {
+    toast.remove();
+    observer?.disconnect();
+    if (ui.toast?.el !== toast) return;
+    ui.toast = null;
+    document.body.classList.remove('has-toast');
+    root.style.removeProperty('--toast-space');
+  };
   const toast = h('div', { class: 'toast', role: 'status' }, h('span', null, text),
-    action ? h('button', { type: 'button', class: 'btn small', onclick: () => { toast.remove(); action.run(); } }, action.label) : null,
-    h('button', { type: 'button', class: 'btn small', 'aria-label': '알림 닫기', onclick: () => toast.remove() }, '닫기'));
+    action ? h('button', { type: 'button', class: 'btn small', onclick: () => { dismiss(); action.run(); } }, action.label) : null,
+    h('button', { type: 'button', class: 'btn small', 'aria-label': '알림 닫기', onclick: dismiss }, '닫기'));
   document.body.append(toast);
-  ui.toast = toast;
-  if (!action) setTimeout(() => toast.remove(), 6000);
+  ui.toast = { el: toast, dismiss };
+  const fit = () => root.style.setProperty('--toast-space', `${Math.ceil(toast.getBoundingClientRect().height)}px`);
+  fit();
+  if (typeof ResizeObserver === 'function') {
+    observer = new ResizeObserver(fit);
+    observer.observe(toast);
+  }
+  document.body.classList.add('has-toast');
+  if (!action) setTimeout(dismiss, 6000);
 }
 
 // 다른 기기에서 바뀐 내용이 들어왔을 때: 입력 중이 아니면 같은 화면을 다시 그린다.
@@ -748,6 +767,12 @@ function openExport() {
   ]);
 }
 
+// 덮어쓰기 시각을 지금으로 낮췄을 때의 경고 (store.applyImport)
+function aheadWarning({ aheadMs, latest }) {
+  const min = Math.max(1, Math.round(aheadMs / 60000));
+  return `경고: 저장된 값 중 시각이 지금보다 약 ${min}분 앞선 것(${store.formatStamp(new Date(latest))})이 있어, 그 시각 대신 지금 시각으로 덮어썼습니다. 시계가 앞선 기기에서 고친 값은 덮어써지지 않고 남을 수 있습니다 — 그 기기의 시계를 확인하세요.`;
+}
+
 function openImport() {
   const status = h('p', { class: 'dialog-status', role: 'status' });
   const preview = h('div', { class: 'import-preview' });
@@ -771,7 +796,7 @@ function openImport() {
     const rows = [
       ['서류 해부 4문 답', 'answers'], ['제출한 문항', 'submitted'], ['카드 코멘트', 'comments'], ['꼬리질문 답', 'followups'], ['압박 문항 답', 'pressure'], ['기둥 내 문장', 'pillars'],
       ['말하기 내 버전', 'scripts'], ['공부 체크리스트', 'study'], ['확인할 것', 'toConfirm'], ['용어 앎/모름', 'glossary'],
-      ['엮기 묶음', 'clusters'], ['정의하기', 'identity'], ['내 포지셔닝', 'myPositioning'],
+      ['엮기 묶음', 'clusters'], ['직무 렌즈 메모', 'lensNotes'], ['정의하기', 'identity'], ['내 포지셔닝', 'myPositioning'], ['최종 보고서', 'reports'],
     ].map(([label, key]) => [label, String(incoming[key]), String(current[key])]);
     rows.push(['가장 최근 수정', when(incoming.latest), when(current.latest)]);
     const merge = h('input', { type: 'radio', name: 'import-mode', value: 'merge', checked: true });
@@ -779,13 +804,18 @@ function openImport() {
 
     const apply = (mode) => {
       // 덮어쓰기는 계정 저장소에서 받아 둔 문서까지 보고, 백업에 없는 칸을 지운 것으로 퍼뜨린다.
-      store.applyImport(parsed.state, mode, { remote: sync.knownDocs() });
+      const warning = store.applyImport(parsed.state, mode, { remote: sync.knownDocs() });
       preview.replaceChildren();
       file.value = '';
       status.textContent = mode === 'overwrite' ? '덮어썼습니다.' : '병합했습니다.';
       renderRoute({ keepScroll: true });
+      if (warning) {
+        const text = aheadWarning(warning);
+        status.replaceChildren('덮어썼습니다. ', h('strong', { class: 'error' }, text));
+        showToast(text, { label: '확인', run: () => {} });
+      }
     };
-    const erased = '백업에 없는 답·꼬리질문 답·제출본·카드 코멘트·압박 문항 답·체크·메모·정의하기·내 포지셔닝은 지워집니다';
+    const erased = '백업에 없는 답·꼬리질문 답·제출본·카드 코멘트·압박 문항 답·체크·메모·정의하기·직무 렌즈 메모·내 포지셔닝은 지워집니다';
     // 덮어쓰기는 페이지 안에서 한 번 더 확인한다 (claude.ai 안에서는 confirm() 창이 뜨지 않는다).
     const confirmBox = h('div', { class: 'warn confirm-box', hidden: true },
       h('p', null, sync.isActive()

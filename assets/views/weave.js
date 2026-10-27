@@ -1,12 +1,14 @@
-// 엮기 탭 (claude.ai판에서만): 재료 현황 → 실행·진행 → 축별 묶음(내가 고친다) → 실 → 정의하기(내가 쓴다) → 포지셔닝과 대조.
-// Claude가 낸 것은 .ai-out(다른 배경색과 "Claude 엮기" 머리표), 내가 쓰는 칸은 보통 입력칸으로 둔다.
+// 엮기 탭 (claude.ai판에서만): 재료 현황 → 실행·진행 → 축별 묶음(내가 고친다) → 실 → 직무·회사 렌즈(메모는 내가 쓴다)
+// → 정의하기(내가 쓴다) → 포지셔닝과 대조 → 최종 보고서 만들기.
+// Claude가 낸 것은 .ai-out(다른 배경색과 "Claude 엮기"·렌즈는 "Claude 렌즈" 머리표), 내가 쓰는 칸은 보통 입력칸으로 둔다.
 
-import { h, nonEmpty, para, section, collapsible, answerBox, autosizeIn, focusLink, badge, aiBox, tabLabel, onCleanup, showToast } from '../app.js';
+import { h, nonEmpty, para, section, collapsible, answerBox, autosizeIn, focusLink, badge, aiBox, tabLabel, onCleanup, showToast, go } from '../app.js';
 import * as ai from '../ai.js';
 import * as store from '../store.js';
 import * as weave from '../weave.js';
+import * as final from '../final.js';
 import {
-  AXES, AXIS_INFO, IDENTITY_KEYS, IDENTITY_LABEL, liveClusters, looseCards, clusterName, positioningTargets, versionId,
+  AXES, AXIS_INFO, IDENTITY_KEYS, IDENTITY_LABEL, NO_RESULT, liveClusters, looseCards, clusterName, positioningTargets, versionId, archivedList,
 } from '../weave-model.js';
 
 // 접기 섹션은 다시 그려도 열린 채로 둔다.
@@ -48,7 +50,7 @@ function statusBlock(ctx) {
   const runs = store.weaveRuns();
   const last = runs[runs.length - 1];
   const times = last?.steps?.length
-    ? h('p', { class: 'small faint' }, `지난 실행(${when(last.at)}): `, last.steps.map((s) => `${s.key === 'thread' ? '엮기' : AXIS_INFO[s.key]?.step ?? s.key} ${s.ms !== null ? duration(s.ms) : '—'}${s.ok ? '' : ' (실패)'}`).join(' · '))
+    ? h('p', { class: 'small faint' }, `지난 실행(${when(last.at)}): `, last.steps.map((s) => `${weave.stepLabel(s.key)} ${s.ms !== null ? duration(s.ms) : '—'}${s.ok ? '' : ' (실패)'}`).join(' · '))
     : null;
   return section({ title: '재료 현황', id: 'weave-status' },
     h('p', { class: 'material-line' },
@@ -66,7 +68,7 @@ const STEP_ICON = { waiting: '○', blocked: '○', running: '◐', done: '✓',
 
 function stepText(step) {
   if (step.state === 'waiting') return '대기';
-  if (step.state === 'blocked') return '묶기 네 단계가 모두 끝나야 시작합니다';
+  if (step.state === 'blocked') return step.key === 'lens' ? '엮기가 끝나야 시작합니다' : '묶기 네 단계가 모두 끝나야 시작합니다';
   if (step.state === 'running') return step.chars ? `쓰는 중… ${step.chars.toLocaleString()}자` : '생각하는 중…';
   if (step.state === 'error') return step.error === 'cancelled' ? '중지했습니다' : ai.errorText(step.error);
   const d = step.dropped ?? {};
@@ -74,6 +76,11 @@ function stepText(step) {
   if (d.quotes) parts.push(`내 답에 없는 인용 ${d.quotes}개를 버렸습니다`);
   if (d.clusters) parts.push(`경험이 하나만 남은 묶음 ${d.clusters}개를 풀었습니다`);
   if (d.links) parts.push(`없는 묶음을 가리킨 연결 ${d.links}개를 뺐습니다`);
+  if (d.rows) parts.push(`JD 원문과 다른 행 ${d.rows}개를 버렸습니다`);
+  if (d.missing) parts.push(`빠진 JD 행 ${d.missing}개를 "${NO_RESULT}"으로 채웠습니다`);
+  if (d.weakened) parts.push(`근거가 확인되지 않아 강도를 낮춘 행 ${d.weakened}개`);
+  if (d.axes) parts.push(`회사 축과 맞지 않는 항목 ${d.axes}개를 버렸습니다`);
+  if (d.material) parts.push(`카드·JD 원문과 맞지 않는 재료 ${d.material}개를 버렸습니다`);
   return parts.join(' · ') || '완료';
 }
 
@@ -102,7 +109,7 @@ function runBlock(ctx) {
     start.disabled = weave.busy() || !st.ready;
     stop.hidden = !run?.active;
     reason.textContent = st.ready
-      ? (ran ? '다시 실행해도 내가 고친 이름·의미·잠근 묶음·옮기거나 넣은 멤버·정의하기·내 포지셔닝은 그대로 남습니다. 잠그지 않은 Claude 묶음만 새 결과로 바뀝니다.' : '묶기 4번(왜 → 뭐 → 배움 → 입사 후)과 엮기 1번이 차례로 자동 진행됩니다. 끝난 뒤 결과를 고치면 됩니다.')
+      ? (ran ? '다시 실행해도 내가 고친 이름·의미·잠근 묶음·옮기거나 넣은 멤버·렌즈 메모·정의하기·내 포지셔닝은 그대로 남습니다. 잠그지 않은 Claude 묶음과 렌즈 결과만 새로 바뀝니다.' : '묶기 4번(왜 → 뭐 → 배움 → 입사 후), 엮기 1번, 렌즈 1번이 차례로 자동 진행됩니다. 끝난 뒤 결과를 고치면 됩니다.')
       : `${st.short.map((axis) => `${AXIS_INFO[axis].label} ${st.counts[axis]}개`).join(', ')} — 네 축 모두 답이 ${weave.MIN_ANSWERS}개 이상이어야 엮을 수 있습니다.`;
     stay.textContent = run?.active ? '이 화면을 떠나지 마세요 — 페이지를 닫거나 새로고침하면 진행 중인 단계가 멈춥니다.' : '';
     steps.hidden = !run;
@@ -221,8 +228,9 @@ function tensionsBlock(ctx, dim) {
 }
 
 function archivedBlock(ctx, dim) {
-  if (!dim.archived.length) return null;
-  return collapsible(`이전 묶음 ${dim.archived.length}개 — 다시 엮을 때 옮겨 붙일 곳이 없던 내 이름·의미`, h('ul', { class: 'archived' }, dim.archived.map((a) => h('li', null,
+  const list = archivedList(dim);
+  if (!list.length) return null;
+  return collapsible(`이전 묶음 ${list.length}개 — 다시 엮을 때 옮겨 붙일 곳이 없던 내 이름·의미`, h('ul', { class: 'archived' }, list.map((a) => h('li', null,
     h('p', null, h('strong', null, a.myName || a.aiName || '이름 없음'), ' ', h('span', { class: 'small faint' }, when(a.at))),
     para(a.myMeaning, { class: 'pre' }),
     a.members.length ? h('p', { class: 'small' }, '경험: ', idChips(ctx, a.members.map((m) => m.cardId))) : null))), { cls: 'archived-box' });
@@ -295,6 +303,73 @@ function threadBlock(ctx) {
       h('h3', null, '빈 곳'), gaps.length ? h('ul', { class: 'gaps' }, gaps) : h('p', { class: 'small faint' }, '없음')));
 }
 
+// ---- 직무·회사 렌즈 ----
+
+const STRENGTH_CLASS = { '직접 해봄': 'grade-strong', '비슷한 걸 해봄': 'grade-mid', '조사만 함': 'grade-weak', 없음: 'grade-none' };
+const TOUCH_CLASS = { 닿음: 'grade-strong', '약하게 닿음': 'grade-mid', '안 닿음': 'grade-none' };
+const GAP_STRENGTHS = new Set(['없음', '조사만 함', NO_RESULT]);
+const gradeBadge = (text, classes) => badge(text, `grade ${classes[text] ?? 'grade-none'}`);
+const LENS_TAG = 'Claude 렌즈';
+
+function coverageRow(ctx, r, i) {
+  const missing = r.strength === NO_RESULT;
+  return h('li', { class: GAP_STRENGTHS.has(r.strength) ? 'coverage-row gap' : 'coverage-row', id: `lens-row-${i}` },
+    h('p', { class: 'coverage-jd' }, h('strong', null, r.jd), ' ', gradeBadge(r.strength, STRENGTH_CLASS)),
+    aiBox(LENS_TAG,
+      missing ? h('p', { class: 'small' }, 'Claude가 이 행을 내지 않았거나 원문과 다른 jd로 내서, 결과 없음으로 채웠습니다.') : null,
+      r.evidence.length ? r.evidence.map((q) => quoteLine(ctx, q)) : missing ? null : h('p', { class: 'small faint' }, '내 답에서 찾은 근거 없음'),
+      r.via.length ? h('p', { class: 'small' }, h('span', { class: 'label' }, '거친 묶음·흐름'), ' ', r.via.join(' · ')) : null,
+      nonEmpty(r.next_question) ? h('p', { class: 'small' }, h('span', { class: 'label' }, '이어질 질문'), ' ', r.next_question) : null,
+      nonEmpty(r.gap_note) ? h('p', { class: 'small gap-note' }, h('span', { class: 'label' }, '모르는 것'), ' ', r.gap_note) : null),
+    h('p', { class: 'input-label' }, '내 메모 — 이 공백을 어떻게 말할지'),
+    answerBox({ value: store.lensNote(r.jd), onInput: (v) => store.setLensNote(r.jd, v), rows: 2, label: `${r.jd} — 내 메모`, placeholder: '내 말로 씁니다', check: true }));
+}
+
+function lensBlock(ctx) {
+  const lens = store.lens();
+  const result = lens?.result;
+  if (!result) {
+    return section({ title: '직무·회사 렌즈', id: 'weave-lens' },
+      h('p', { class: 'small faint' }, '엮기 실행의 마지막 단계에서, 엮어 낸 경험을 JD 업무와 회사의 지금 국면에 비춰 어디가 닿고 어디가 비는지 여기에 보여 줍니다.'));
+  }
+  const stale = lens.basisHash !== weave.lensBasis(weave.lensContext(ctx.data));
+  const count = (s) => result.coverage.filter((r) => r.strength === s).length;
+  const summary = ['직접 해봄', '비슷한 걸 해봄', '조사만 함', '없음', NO_RESULT].filter(count).map((s) => `${s} ${count(s)}`).join(' · ');
+  return section({ title: '직무·회사 렌즈', id: 'weave-lens' },
+    h('p', { class: 'small faint' }, `${when(lens.at)} 렌즈`, stale ? ' · 그 뒤로 엮기 결과나 압박 문항 답이 바뀌었습니다 (다시 엮으면 반영)' : ''),
+    h('h3', null, '직무 커버리지 지도'),
+    h('p', { class: 'small muted' }, 'JD 업무마다 강도·근거·이어질 질문은 Claude가 내 답을 그대로 인용해 짚은 것입니다. 내 메모는 내가 씁니다 — 다시 엮어도 남습니다.'),
+    h('p', { class: 'lens-summary' }, `JD 업무 ${result.coverage.length}개 — ${summary}`),
+    h('ol', { class: 'coverage' }, result.coverage.map((r, i) => coverageRow(ctx, r, i))),
+    h('h3', null, '회사와 나의 접점'),
+    h('ul', { class: 'touch-list' }, result.company_touch.map((t) => h('li', { class: 'touch-row' },
+      h('p', null, h('strong', null, t.axis), ' ', gradeBadge(t.touch, TOUCH_CLASS)),
+      t.evidence.length || nonEmpty(t.note) ? aiBox(LENS_TAG, t.evidence.map((q) => quoteLine(ctx, q)), nonEmpty(t.note) ? h('p', { class: 'small' }, t.note) : null) : null))));
+}
+
+// ---- 최종 보고서 만들기 (맨 아래) ----
+
+function finalBlock(ctx) {
+  const btn = h('button', { type: 'button', class: 'btn primary', onclick: () => {
+    final.start(ctx.data);
+    go('#/final');
+  } }, '최종 보고서 만들기');
+  const reason = h('p', { class: 'small muted' });
+  const past = store.reports().length;
+  const paint = () => {
+    const st = final.readiness();
+    btn.disabled = !st.ready || weave.busy();
+    reason.textContent = st.ready
+      ? '엮기·렌즈 결과와 내가 쓴 글을 8섹션(인쇄 6~8쪽)으로 모읍니다. 내 문단과 메모는 원문 그대로 들어가고, Claude는 근거·질문·할 일만 정리합니다. 1~3분 걸릴 수 있습니다.'
+      : `${st.missing.join(', ')} — 이것이 있어야 만들 수 있습니다.`;
+  };
+  ctx.paintFinal = paint;
+  paint();
+  return section({ title: '최종 보고서', id: 'weave-final' },
+    h('div', { class: 'row' }, btn, past ? h('a', { class: 'btn', href: '#/final' }, `지난 보고서 보기 (${past})`) : null),
+    reason);
+}
+
 // ---- 정의하기 ----
 
 function materialBox(ctx, key) {
@@ -331,6 +406,7 @@ function identityBlock(ctx) {
           onInput: (v) => {
             store.setIdentity(key, v);
             ctx.paintCompare?.();
+            ctx.paintFinal?.();
           },
           rows: 5,
           label: IDENTITY_LABEL[key],
@@ -513,13 +589,15 @@ export function render({ data }) {
       if (key === 'thread') {
         keys.add('thread');
         for (const k of IDENTITY_KEYS) keys.add(`material-${k}`);
-      } else keys.add(`axis-${key}`);
+      } else if (key === 'lens') keys.add('lens');
+      else keys.add(`axis-${key}`);
     }
     if (prev.compare && !next.compare) keys.add('compare');
     prev = next;
     if (keys.size) ctx.refreshAuto(...keys);
     ctx.paintRun?.();
     ctx.paintCompare?.();
+    ctx.paintFinal?.();
   });
   onCleanup(off);
 
@@ -532,6 +610,8 @@ export function render({ data }) {
       h('p', { class: 'small muted' }, '이름 바꾸기·의미 쓰기·멤버 빼기와 옮기기·잠그기는 다시 엮어도 남습니다. 멤버를 누르면 그 카드의 그 문항으로 갑니다.'),
       AXES.map((axis) => ctx.slot(`axis-${axis}`, () => axisBlock(ctx, axis)))),
     ctx.slot('thread', () => threadBlock(ctx)),
+    ctx.slot('lens', () => lensBlock(ctx)),
     identityBlock(ctx),
-    ctx.slot('compare', () => compareBlock(ctx)));
+    ctx.slot('compare', () => compareBlock(ctx)),
+    finalBlock(ctx));
 }

@@ -1,7 +1,8 @@
-// 면접 전 리포트 — 내가 쓴 글과 이미 받아 둔 결과(엮기·카드 코멘트)를 한곳에 모은다. 여기서 Claude를 부르지 않는다.
+// 자료 모음 — 내가 쓴 글과 이미 받아 둔 결과(엮기·렌즈 메모·카드 코멘트)를 한곳에 모은다. 여기서 Claude를 부르지 않는다.
 // 인쇄(PDF)하거나, 스타일을 담은 HTML 파일 하나로 저장할 수 있다. GitHub Pages판과 claude.ai판 모두 같다.
+// (Claude가 8섹션으로 정리하는 최종 보고서는 따로 #/final — views/final.js)
 
-import { h, nonEmpty, section, table, badge, focusLink, aiBox, saveFile } from '../app.js';
+import { h, nonEmpty, section, table, badge, focusLink, aiBox, saveFile, tabLabel } from '../app.js';
 import * as ai from '../ai.js';
 import * as store from '../store.js';
 import * as lint from '../lint.js';
@@ -67,6 +68,13 @@ export function render({ data }) {
         h('strong', null, t.stage), t.cards.length ? h('span', { class: 'small faint' }, ` (${t.cards.join(', ')})`) : null,
         nonEmpty(t.shift) ? h('p', { class: 'small' }, '달라진 것: ', t.shift) : null,
         nonEmpty(t.kept) ? h('p', { class: 'small' }, '그대로인 것: ', t.kept) : null)))] : null)) : null;
+  // 직무 렌즈 — JD 업무마다 내가 쓴 메모
+  const lensRows = (store.lens()?.result?.coverage ?? []).filter((r) => store.lensNote(r.jd).trim());
+  const lensNotes = lensRows.length ? section({ title: '직무 렌즈 — 내 메모', id: 'report-lens' },
+    lensRows.map((r) => h('div', { class: 'report-item' },
+      h('h3', null, r.jd, ' ', h('span', { class: 'report-tag' }, r.strength)),
+      h('p', { class: 'pre' }, store.lensNote(r.jd)),
+      checked(store.lensNote(r.jd), null, focusLink('#/weave', 'weave-lens', `직무 렌즈 · ${r.jd}`))))) : null;
   const clusters = section({ title: '축별 묶음 — 내 의미', id: 'report-clusters' }, AXES.map((axis) => {
     const list = liveClusters(store.weaveDim(axis));
     if (!list.length) return null;
@@ -149,7 +157,7 @@ export function render({ data }) {
     h('button', { type: 'button', class: 'btn', onclick: async () => { status.textContent = await saveReport(root, data); } }, 'HTML 파일로 저장'));
   // 비어 있는 섹션은 null이다 — append는 null을 글자로 넣으므로 걸러 낸다.
   root.append(...[
-    h('h1', null, '면접 전 리포트'),
+    h('h1', null, tabLabel('report')),
     h('p', { class: 'muted' }, '내가 쓴 글과 이미 받아 둔 결과를 한곳에 모았습니다. 이 화면은 Claude를 부르지 않습니다 — 보라색 칸은 엮기 탭과 카드에서 받아 둔 Claude 결과입니다.'),
     h('p', { class: 'report-summary' },
       `${store.formatStamp(new Date())} 기준 · 제출한 문항 ${submittedTotal}/${total} · 카드 코멘트 ${comments}/${cards.length} · 압박 문항 답 ${pressureDone}/${(data.pressure ?? []).length}`,
@@ -158,16 +166,16 @@ export function render({ data }) {
     tools,
     h('p', { class: 'small faint report-tools' }, 'claude.ai 안에서 인쇄가 안 되면 HTML 파일로 저장해 브라우저에서 열고 인쇄하세요. 저장한 파일은 평문이니 공개된 곳에 올리지 마세요.'),
     status,
-    identity, scripts, positioning, threadSection, clusters, cardsSection, pressure, defense, warningSection,
+    identity, scripts, positioning, threadSection, lensNotes, clusters, cardsSection, pressure, defense, warningSection,
   ].filter(Boolean));
   return root;
 }
 
-// 화면에 보이는 리포트를 스타일까지 담은 HTML 파일 하나로 (앱 안 링크는 글자로 바꾼다)
+// 화면에 보이는 자료 모음을 스타일까지 담은 HTML 파일 하나로 (앱 안 링크는 글자로 바꾼다)
 async function saveReport(root, data) {
   const css = await fetch('assets/styles.css', { cache: 'no-cache' }).then((r) => (r.ok ? r.text() : '')).catch(() => '');
   const d = new Date();
-  const doc = document.implementation.createHTMLDocument(`면접 전 리포트 — ${data.meta?.title ?? ''}`);
+  const doc = document.implementation.createHTMLDocument(`${tabLabel('report')} — ${data.meta?.title ?? ''}`);
   doc.documentElement.lang = 'ko';
   const charset = doc.createElement('meta');
   charset.setAttribute('charset', 'utf-8');
@@ -185,6 +193,6 @@ async function saveReport(root, data) {
   main.className = 'view';
   main.append(doc.importNode(copy, true));
   doc.body.append(main);
-  const name = `prep-report-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.html`;
+  const name = `prep-materials-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.html`;
   return saveFile({ name, body: `<!doctype html>\n${doc.documentElement.outerHTML}\n`, type: 'text/html' });
 }

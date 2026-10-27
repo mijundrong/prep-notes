@@ -37,6 +37,8 @@ export function blankState() {
     toConfirm: {},
     glossary: {},
     weave: { dims: {}, thread: null, runs: [] },
+    lens: null,
+    reports: [],
     identity: {},
     compare: null,
     myPositioning: {},
@@ -142,6 +144,10 @@ export const weaveDim = (axis) => (model.AXES.includes(axis) ? state.weave.dims[
 export const weaveThread = () => state.weave.thread;
 export const weaveRuns = () => state.weave.runs;
 export const identityText = (key) => (own(state.identity, key) ? state.identity[key].text : '');
+export const lens = () => state.lens;
+export const lensNote = (jd) => (state.lens && own(state.lens.myNotes, jd) ? state.lens.myNotes[jd].text : '');
+// 최종 보고서 버전, 오래된 것부터
+export const reports = () => state.reports;
 export const compare = () => state.compare;
 export const myPositioning = (target) => (own(state.myPositioning, target) && hasText(state.myPositioning[target]) ? state.myPositioning[target] : null);
 
@@ -279,6 +285,27 @@ export function recordWeaveRun(entry) {
   touch('weave_thread');
 }
 
+// 렌즈: 다시 실행하면 결과만 바뀌고 내 메모는 남는다.
+export function setLensResult({ result, basisHash }) {
+  state.lens = { result, basisHash, at: now(), myNotes: state.lens?.myNotes ?? {} };
+  touch('lens');
+}
+
+// 직무 커버리지 지도의 JD 업무마다 내가 쓰는 메모 ("이 공백을 어떻게 말할지")
+export function setLensNote(jd, text) {
+  if (UNSAFE_KEYS.has(jd)) return;
+  state.lens ??= { result: null, basisHash: '', at: null, myNotes: {} };
+  state.lens.myNotes[jd] = { text, updatedAt: now() };
+  touch('lens');
+}
+
+// 최종 보고서 한 판을 버전으로 남긴다 (최근 3개). 버전이 하나 밀리면 문서 report_1~3이 모두 바뀐다.
+export function addReport({ basisHash, markdown }) {
+  state.reports = model.mergeReports(state.reports, [{ at: now(), basisHash, markdown }]);
+  touch();
+  for (const id of reportDocIds()) for (const fn of docListeners) fn(id);
+}
+
 export function setIdentity(key, text) {
   state.identity[key] = { text, updatedAt: now() };
   touch('identity');
@@ -385,6 +412,8 @@ function normalize(raw) {
   for (const [id, c] of entries(raw.cards)) if (isObj(c)) s.cards[id] = normalizeCard(c);
   for (const key of FLAT_KEYS) s[key] = normalizeSection(key, raw[key]);
   s.weave = normalizeWeave(raw.weave);
+  s.lens = model.normalizeLens(raw.lens);
+  s.reports = model.normalizeReports(raw.reports);
   s.compare = model.normalizeCompare(raw.compare);
   if (isObj(raw.ui)) {
     if (THEMES.includes(raw.ui.theme)) s.ui.theme = raw.ui.theme;
@@ -439,16 +468,30 @@ export function merge(base, incoming) {
   for (const id of ids) out.cards[id] = mergeCard(base.cards[id], incoming.cards[id]);
   for (const key of FLAT_KEYS) out[key] = mergeFlat(base[key], incoming[key]);
   out.weave = mergeWeave(base.weave, incoming.weave);
+  out.lens = model.mergeLens(base.lens, incoming.lens);
+  out.reports = model.mergeReports(base.reports, incoming.reports);
   out.compare = model.mergeCompare(base.compare, incoming.compare);
   return clone(out);
 }
 
-// ---- 동기화 문서: 카드마다 하나, 압박 문항 하나, 나머지 하나, 엮기는 축마다 하나와 실 하나, 정의·대조·내 포지셔닝 하나씩 ----
+// ---- 동기화 문서: 카드마다 하나, 압박 문항 하나, 나머지 하나, 엮기는 축마다 하나와 실 하나, 정의·대조·내 포지셔닝·렌즈 하나씩,
+// 최종 보고서는 버전마다 하나(report_1이 가장 최근) ----
 
-const SINGLE_DOCS = ['identity', 'compare', 'myPositioning'];
+const SINGLE_DOCS = ['identity', 'compare', 'myPositioning', 'lens'];
+const REPORT_DOC = /^report_([1-9])$/;
 
 // 없앤 기능의 문서(문항별 피드백 fb_*, 전체 점검 review). sync.js가 계정 저장소에서 지운다.
 export const isObsoleteDoc = (docId) => docId.startsWith('fb_') || docId === 'review';
+
+function reportDocIds() {
+  return state.reports.map((_, i) => `report_${i + 1}`);
+}
+
+// report_n: 최근 것부터 n번째
+const reportAt = (docId) => {
+  const n = Number(REPORT_DOC.exec(docId)?.[1]);
+  return n && n <= state.reports.length ? state.reports[state.reports.length - n] : null;
+};
 
 export function docIds() {
   const ids = new Set(Object.keys(state.cards).map(cardDoc));
@@ -457,6 +500,7 @@ export function docIds() {
   for (const axis of model.AXES) if (state.weave.dims[axis]) ids.add(dimDoc(axis));
   if (state.weave.thread || state.weave.runs.length) ids.add('weave_thread');
   for (const id of SINGLE_DOCS) if (docBody(id)) ids.add(id);
+  for (const id of reportDocIds()) ids.add(id);
   return [...ids];
 }
 
@@ -482,6 +526,11 @@ export function docBody(docId) {
   if (docId === 'identity') return Object.keys(state.identity).length ? { v: 1, identity: clone(state.identity) } : null;
   if (docId === 'compare') return state.compare ? { v: 1, compare: clone(state.compare) } : null;
   if (docId === 'myPositioning') return Object.keys(state.myPositioning).length ? { v: 1, myPositioning: clone(state.myPositioning) } : null;
+  if (docId === 'lens') return state.lens ? { v: 1, lens: clone(state.lens) } : null;
+  if (REPORT_DOC.test(docId)) {
+    const report = reportAt(docId);
+    return report ? { v: 1, report: clone(report) } : null;
+  }
   return null;
 }
 
@@ -508,6 +557,17 @@ export function mergeDoc(docId, body) {
     state[docId] = mergeFlat(state[docId], normalizeSection(docId, body[docId]));
   } else if (docId === 'compare') {
     state.compare = model.mergeCompare(state.compare, model.normalizeCompare(body.compare));
+  } else if (docId === 'lens') {
+    state.lens = model.mergeLens(state.lens, model.normalizeLens(body.lens));
+  } else if (REPORT_DOC.test(docId)) {
+    // 버전 하나가 들어와도 순서가 밀려 다른 report_n 문서까지 바뀔 수 있다 — 모두 다시 맞춰 보게 알린다.
+    const all = JSON.stringify(state.reports);
+    state.reports = model.mergeReports(state.reports, model.normalizeReports([body.report]));
+    if (JSON.stringify(state.reports) !== all) {
+      touch();
+      for (const id of reportDocIds()) for (const fn of docListeners) fn(id);
+      return true;
+    }
   } else {
     return false;
   }
@@ -543,8 +603,6 @@ export function parseBackup(text) {
   return { state: normalize(raw), exportedAt: time(raw.exportedAt) };
 }
 
-const CLUSTER_STAMPS = ['myNameAt', 'myMeaningAt', 'lockedAt', 'membersAt', 'deletedAt'];
-
 function eachStamp(s, fn) {
   for (const c of Object.values(s.cards)) {
     fn(c.updatedAt);
@@ -556,11 +614,13 @@ function eachStamp(s, fn) {
   for (const key of FLAT_KEYS) {
     for (const v of Object.values(s[key])) fn(v.updatedAt);
   }
-  for (const dim of Object.values(s.weave.dims)) {
-    fn(dim.at);
-    for (const c of dim.clusters) for (const k of CLUSTER_STAMPS) fn(c[k]);
-  }
+  for (const dim of Object.values(s.weave.dims)) for (const t of model.dimStamps(dim)) fn(t);
   fn(s.weave.thread?.at);
+  if (s.lens) {
+    fn(s.lens.at);
+    for (const n of Object.values(s.lens.myNotes)) fn(n.updatedAt);
+  }
+  for (const r of s.reports) fn(r.at);
   if (s.compare) {
     fn(s.compare.at);
     for (const d of Object.values(s.compare.decisions)) fn(d.updatedAt);
@@ -587,6 +647,8 @@ export function summarize(s = state) {
     toConfirm: Object.values(s.toConfirm).filter(marked).length,
     glossary: Object.values(s.glossary).filter((v) => v.known !== null).length,
     clusters: Object.values(s.weave.dims).reduce((n, dim) => n + model.liveClusters(dim).length, 0),
+    lensNotes: s.lens ? Object.values(s.lens.myNotes).filter(hasText).length : 0,
+    reports: s.reports.length,
     identity: Object.values(s.identity).filter(hasText).length,
     myPositioning: Object.values(s.myPositioning).filter(hasText).length,
     latest: latest ? new Date(latest) : null,
@@ -603,14 +665,19 @@ function restamp(s, t) {
     if (c.comment) c.comment.at = t;
   }
   for (const key of FLAT_KEYS) for (const v of Object.values(s[key])) v.updatedAt = t;
+  // 엮기 축은 시각의 앞뒤(실행·편집·잠금·지움)가 뜻을 가지므로 순서를 지킨 채 t 이후로 옮긴다.
   // 실이 어느 축 결과로 엮였는지(dimsAt)도 같이 옮겨야 "그 뒤로 묶음이 다시 만들어졌습니다"가 거짓으로 뜨지 않는다.
   const dimsAt = s.weave.thread?.dimsAt ?? {};
   for (const [axis, dim] of Object.entries(s.weave.dims)) {
-    if (dimsAt[axis] && dimsAt[axis] === dim.at) dimsAt[axis] = t;
-    dim.at = t;
-    for (const c of dim.clusters) for (const k of CLUSTER_STAMPS) if (c[k]) c[k] = t;
+    const before = dim.at;
+    model.restampDim(dim, t);
+    if (dimsAt[axis] && dimsAt[axis] === before) dimsAt[axis] = dim.at;
   }
   if (s.weave.thread) s.weave.thread.at = t;
+  if (s.lens) {
+    s.lens.at = t;
+    for (const n of Object.values(s.lens.myNotes)) n.updatedAt = t;
+  }
   if (s.compare) {
     s.compare.at = t;
     for (const d of Object.values(s.compare.decisions)) d.updatedAt = t;
@@ -622,6 +689,7 @@ function restamp(s, t) {
 function knownKeys(s, remote) {
   const cards = new Map();
   const flat = Object.fromEntries(FLAT_KEYS.map((k) => [k, new Set()]));
+  const notes = new Set(Object.keys(s.lens?.myNotes ?? {}));
   const addCard = (id, c) => {
     if (UNSAFE_KEYS.has(id)) return;
     const k = cards.get(id) ?? { answers: new Set(), followups: new Set(), submitted: new Set(), comment: false };
@@ -637,8 +705,9 @@ function knownKeys(s, remote) {
     else if (docId === 'pressure') for (const k of Object.keys(normalizeSection('pressure', body.pressure))) flat.pressure.add(k);
     else if (docId === 'misc') for (const key of MISC_KEYS) for (const k of Object.keys(normalizeSection(key, body[key]))) flat[key].add(k);
     else if (docId === 'identity' || docId === 'myPositioning') for (const k of Object.keys(normalizeSection(docId, body[docId]))) flat[docId].add(k);
+    else if (docId === 'lens') for (const k of Object.keys(model.normalizeLens(body.lens)?.myNotes ?? {})) notes.add(k);
   }
-  return { cards, flat };
+  return { cards, flat, notes };
 }
 
 const EMPTY = {
@@ -655,6 +724,10 @@ const EMPTY = {
 // 백업에 없는 칸은 "빈 값 + 지금 시각"으로 남긴다. 그래야 계정 저장소와 다른 기기에서도 지워진다.
 function eraseMissing(next, known, t) {
   for (const key of FLAT_KEYS) for (const k of known.flat[key]) if (!own(next[key], k)) next[key][k] = EMPTY[key](t);
+  for (const k of known.notes) {
+    next.lens ??= { result: null, basisHash: '', at: null, myNotes: {} };
+    if (!own(next.lens.myNotes, k)) next.lens.myNotes[k] = { text: '', updatedAt: t };
+  }
   for (const [id, k] of known.cards) {
     if (!own(next.cards, id)) next.cards[id] = { status: 'todo', choice: null, updatedAt: t, answers: {}, followups: {}, submitted: {}, comment: null };
     const c = next.cards[id];
@@ -675,11 +748,24 @@ function latestStamp(value, acc = 0) {
   return m;
 }
 
+// 덮어쓰기 시각이 지금보다 이만큼 넘게 앞서야 하면(어느 기기 시계가 크게 앞서 있었다는 뜻) 그 시각은 쓰지 않는다.
+export const AHEAD_LIMIT_MS = 10 * 60 * 1000;
+
 // remote: 동기화가 계정 저장소에서 받아 둔 문서 [[문서 id, 본문], …] (덮어쓰기 때 지울 칸을 찾는 데 쓴다)
+// 돌려주는 값: 덮어쓰기 시각을 지금으로 낮췄으면 { aheadMs, latest } 경고, 아니면 null
 export function applyImport(incoming, mode, { remote = [] } = {}) {
+  let warning = null;
   if (mode === 'overwrite') {
-    // 알고 있는 어떤 편집보다도 늦은 시각이어야 지운 값이 동점 없이 이긴다 (다른 기기 시계가 앞서 있어도).
-    const t = new Date(Math.max(Date.now(), latestStamp(state) + 1, latestStamp(remote) + 1)).toISOString();
+    // 알고 있는 어떤 편집보다도 늦은 시각이어야 지운 값이 동점 없이 이긴다.
+    // 다만 그 시각이 지금보다 10분 넘게 앞서면, 앞선 시계 하나 때문에 이 기기의 시각이 미래로 끌려가지 않게 지금 시각을 쓴다.
+    const nowMs = Date.now();
+    const latest = Math.max(latestStamp(state), latestStamp(remote));
+    let ms = Math.max(nowMs, latest + 1);
+    if (ms - nowMs > AHEAD_LIMIT_MS) {
+      warning = { aheadMs: latest - nowMs, latest: new Date(latest).toISOString() };
+      ms = nowMs;
+    }
+    const t = new Date(ms).toISOString();
     const next = restamp(clone(incoming), t);
     eraseMissing(next, knownKeys(state, remote), t);
     state = { ...next, ui: { ...state.ui } };
@@ -689,6 +775,7 @@ export function applyImport(incoming, mode, { remote = [] } = {}) {
   dirty = true;
   flush();
   for (const id of docIds()) for (const fn of docListeners) fn(id);
+  return warning;
 }
 
 // ---- Markdown 내보내기 (첨삭 요청용) ----

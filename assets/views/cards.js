@@ -138,7 +138,7 @@ function optionsBlock(c) {
 
 const when = (iso) => (iso && !Number.isNaN(Date.parse(iso)) ? store.formatStamp(new Date(iso)) : '');
 
-// 문항마다 제출하기. 제출본은 카드 코멘트와 리포트가 쓴다. 제출 뒤 고치면 다시 제출할 수 있다.
+// 문항마다 제출하기. 제출본은 카드 코멘트와 자료 모음이 쓴다. 제출 뒤 고치면 다시 제출할 수 있다.
 function submitRow(c, q, onSubmit) {
   const btn = h('button', { type: 'button', class: 'btn small' });
   const note = h('span', { class: 'submit-note' });
@@ -158,6 +158,17 @@ function submitRow(c, q, onSubmit) {
   });
   paint();
   return { el: h('div', { class: 'submit-row' }, btn, note), paint };
+}
+
+// "입사 후" 문항 아래: 렌즈가 이 카드에 짚은 재료(JD 업무 일부와 쓰일 수 있는 이유). 접어 두고, 답 칸에는 아무것도 넣지 않는다.
+function lensMaterial(c) {
+  const items = (store.lens()?.result?.apply_material ?? []).filter((m) => m.cardId === c.id);
+  if (!items.length) return null;
+  return collapsible(`직무 렌즈 재료 ${items.length}개`, aiBox('Claude 렌즈',
+    h('p', { class: 'small faint' }, '이 경험이 닿는 JD 업무와 그 이유를 짚은 재료입니다. 답은 내가 씁니다.'),
+    h('ul', { class: 'lens-material' }, items.map((m) => h('li', null,
+      h('p', null, h('span', { class: 'label' }, 'JD'), ` “${m.jd}”`),
+      nonEmpty(m.why) ? h('p', { class: 'small' }, m.why) : null)))), { cls: 'hint lens-hint ai-only', id: `card-${c.id}-lens` });
 }
 
 function questionsBlock(c, statusCtl, onSubmit) {
@@ -187,13 +198,14 @@ function questionsBlock(c, statusCtl, onSubmit) {
         label: `${c.id} ${q.label}`,
         check: c.id,
       }),
-      row.el);
+      row.el,
+      q.key === 'apply' ? lensMaterial(c) : null);
   }));
 }
 
 const labelOf = (c, key) => c.questions?.find((q) => q.key === key)?.label ?? key;
 
-// 카드 코멘트(Claude, 사실 대조) 내용. 리포트도 같은 모양으로 보여 준다.
+// 카드 코멘트(Claude, 사실 대조) 내용. 자료 모음도 같은 모양으로 보여 준다.
 export function commentView(data, c, saved, { stale = false } = {}) {
   const r = saved.result;
   const yes = (topic) => (data.defense ?? []).find((d) => d.topic === topic)?.yes;
