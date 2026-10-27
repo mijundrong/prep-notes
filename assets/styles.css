@@ -502,6 +502,11 @@ progress::-moz-progress-bar { background: var(--accent); }
 .term-en { display: block; font-size: .85rem; font-weight: 400; color: var(--fg-faint); margin-top: 2px; }
 .term-cat { font-size: .8rem; color: var(--fg-faint); margin: 2px 0 6px; }
 .known-toggle { display: flex; gap: 4px; flex: 0 0 auto; }
+.term-src { font-size: .85rem; color: var(--fg-faint); margin-top: 8px; }
+.term-src p { margin: 0; }
+.term-src ul { list-style: none; margin: 2px 0 0; padding: 0; }
+.term-src li { margin: 2px 0; }
+.term-src .label { font-size: inherit; }
 
 .quiz-settings { border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 12px; margin: 10px 0; }
 .quiz-card { padding: 12px 0 16px; border-bottom: 1px solid var(--line); }

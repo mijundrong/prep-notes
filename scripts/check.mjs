@@ -15,14 +15,19 @@ const GLOSSARY_CATEGORIES = ['JD 직접', 'SE', '함급·사업', '아키텍처'
 const GRADES = ['강', '중~강', '중', '약', '없음'];
 const PRIORITIES = [1, 2, 3];
 
-// 스키마 표기: 'str' 문자열, 'str+' 비어 있지 않은 문자열, 'bool', 'int'
-// { arr, len } 배열, { obj } 필수 키 객체, { enum } 허용 값, { map } 키가 정해지지 않은 객체
+// 스키마 표기: 'str' 문자열, 'str+' 비어 있지 않은 문자열, 'bool', 'int', 'url' https 주소
+// { arr, len } 배열, { obj } 필수 키 객체, { enum } 허용 값, { map } 키가 정해지지 않은 객체, { opt } 없어도 되는 키
 const S = 'str';
 const NE = 'str+';
+const URL_ = 'url';
 const arr = (item, len) => ({ arr: item, len });
 const obj = (fields) => ({ obj: fields });
 const oneOf = (...values) => ({ enum: values });
+const opt = (schema) => ({ opt: schema });
 const strs = (len) => arr(S, len);
+
+// 용어 사전 출처: def 정의 확인, fact 왜 나오나의 사실 확인, see 관련 자료
+export const SOURCE_USES = ['def', 'fact', 'see'];
 
 const SCHEMA = obj({
   meta: obj({
@@ -76,13 +81,25 @@ const SCHEMA = obj({
     id: NE, title: NE, priority: oneOf(...PRIORITIES), prompt: NE, hint: NE,
     material: strs(), caution: strs(),
   })),
-  glossary: arr(obj({ term: NE, en: S, category: oneOf(...GLOSSARY_CATEGORIES), short: S, why: S, mine: S })),
+  glossary: arr(obj({
+    term: NE, en: S, category: oneOf(...GLOSSARY_CATEGORIES), short: S, why: S, mine: S,
+    src: opt(arr(obj({ name: NE, url: URL_, use: oneOf(...SOURCE_USES) }))),
+  })),
   study: arr(obj({ id: NE, priority: oneOf(...PRIORITIES), title: NE, what: S, why: S, where: S })),
   defense: arr(obj({ topic: S, no: S, yes: S, why: S })),
 });
 
 const typeName = (v) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 const isPlainObject = (v) => typeName(v) === 'object';
+
+export function isHttpsUrl(v) {
+  if (typeof v !== 'string' || /\s/.test(v)) return false;
+  try {
+    return new URL(v).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 function checkNode(value, schema, path, errors) {
   if (schema === S || schema === NE) {
@@ -96,6 +113,14 @@ function checkNode(value, schema, path, errors) {
   }
   if (schema === 'int') {
     if (!Number.isInteger(value)) errors.push(`${path}: 정수여야 함 (현재 ${JSON.stringify(value)})`);
+    return;
+  }
+  if (schema === URL_) {
+    if (!isHttpsUrl(value)) errors.push(`${path}: https:// 주소여야 함 (현재 ${JSON.stringify(value)})`);
+    return;
+  }
+  if (schema.opt) {
+    checkNode(value, schema.opt, path, errors);
     return;
   }
   if (schema.enum) {
@@ -121,8 +146,8 @@ function checkNode(value, schema, path, errors) {
       return;
     }
     for (const [key, sub] of Object.entries(schema.obj)) {
-      if (!(key in value)) errors.push(`${path}.${key}: 필수 키 없음`);
-      else checkNode(value[key], sub, `${path}.${key}`, errors);
+      if (key in value) checkNode(value[key], sub, `${path}.${key}`, errors);
+      else if (!sub.opt) errors.push(`${path}.${key}: 필수 키 없음`);
     }
     for (const key of Object.keys(value)) {
       if (!(key in schema.obj)) errors.push(`${path}.${key}: 스키마에 없는 키`);
@@ -142,6 +167,7 @@ function checkUnique(list, field, path, errors) {
 }
 
 // 모든 문자열(키 포함)을 훑어 개인식별정보로 보이는 패턴을 찾는다.
+// 키가 url인 https 주소는 건너뛴다 — 공공기관 게시물 번호처럼 긴 숫자가 주소에 들어간다.
 function scanPii(value, path, errors) {
   const scanText = (text, where) => {
     const digits = text.match(/\d{8,}/g);
@@ -161,6 +187,7 @@ function scanPii(value, path, errors) {
   else if (isPlainObject(value)) {
     for (const [k, v] of Object.entries(value)) {
       scanText(k, `${path} 키 ${JSON.stringify(k)}`);
+      if (k === 'url' && isHttpsUrl(v)) continue;
       scanPii(v, `${path}.${k}`, errors);
     }
   }

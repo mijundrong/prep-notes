@@ -1,4 +1,4 @@
-import { h, nonEmpty, para, chipRow, tabLabel } from '../app.js';
+import { h, nonEmpty, para, chipRow, tabLabel, badge } from '../app.js';
 import * as store from '../store.js';
 
 // 검색어·분류 필터와 퀴즈 진행 상태는 탭을 오가도 유지한다.
@@ -6,6 +6,27 @@ const filter = { q: '', cats: new Set() };
 const quiz = { on: false, mode: 'term', unknownFirst: false, current: null, revealed: false, asked: 0, knew: 0, missed: 0 };
 
 const FIELDS = ['term', 'en', 'short', 'why', 'mine'];
+
+// 출처 순서: 지식백과(검색 링크) → 데이터의 src(정의 → 사실 확인 → 관련 자료).
+// src가 있는데 정의(def) 출처가 없으면 "정의 출처 미확인"을 붙인다. src가 아예 없는 옛 데이터는 링크만.
+const SOURCE_GROUPS = [['def', '정의'], ['fact', '사실 확인'], ['see', '관련 자료']];
+const isHttps = (url) => typeof url === 'string' && /^https:\/\/\S+$/i.test(url);
+const outLink = (url, text) => h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, text);
+// 지식백과는 한 항목 주소 대신 검색으로 연다 — 같은 표제어가 여러 사전에 나뉘어 있다.
+const naverUrl = (term) => `https://terms.naver.com/search.naver?query=${encodeURIComponent(term.replace(/\s*\/\s*/g, ' ').trim())}`;
+
+function sources(g) {
+  const list = (Array.isArray(g.src) ? g.src : []).filter((s) => nonEmpty(s?.name) && isHttps(s.url));
+  const groups = SOURCE_GROUPS.map(([use, label]) => {
+    const own = list.filter((s) => s.use === use);
+    return own.length ? h('li', null, h('span', { class: 'label' }, label), ' ', own.map((s, i) => [i ? ' · ' : null, outLink(s.url, s.name)])) : null;
+  }).filter(Boolean);
+  const noDef = Array.isArray(g.src) && !list.some((s) => s.use === 'def');
+  return h('div', { class: 'term-src' },
+    h('p', null, h('span', { class: 'label' }, '출처'), ' ', outLink(naverUrl(g.term), '네이버 지식백과에서 보기'),
+      noDef ? [' ', badge('정의 출처 미확인', 'st-todo')] : null),
+    groups.length ? h('ul', null, groups) : null);
+}
 
 function matches(g) {
   if (filter.cats.size && !filter.cats.has(g.category)) return false;
@@ -40,7 +61,8 @@ function termCard(g, i) {
     nonEmpty(g.category) ? h('p', { class: 'term-cat' }, g.category) : null,
     para(g.short, { class: 'term-short' }),
     nonEmpty(g.why) ? h('p', { class: 'term-why' }, h('span', { class: 'label' }, '왜 나오나'), ' ', g.why) : null,
-    nonEmpty(g.mine) ? h('div', { class: 'mine' }, h('p', { class: 'mine-label' }, '내 경험 연결'), h('p', null, g.mine)) : null);
+    nonEmpty(g.mine) ? h('div', { class: 'mine' }, h('p', { class: 'mine-label' }, '내 경험 연결'), h('p', null, g.mine)) : null,
+    sources(g));
 }
 
 function pick(pool) {
@@ -161,6 +183,9 @@ export function render({ data, focus }) {
 
   return h('div', { class: 'glossary' },
     h('h1', null, tabLabel('glossary')),
+    items.some((g) => Array.isArray(g.src))
+      ? h('p', { class: 'small muted' }, '출처 순서: 네이버 지식백과(검색 링크) → 회사 공식 페이지 → 정부·공공기관 자료. 정의를 공식·공공 자료로 확인하지 못한 용어는 "정의 출처 미확인", 공식 자료로 확인하지 못한 사실은 본문에 "보도 기준"으로 적었습니다.')
+      : null,
     h('div', { class: 'filters' },
       h('div', { class: 'row' }, search, quizBtn),
       chipRow({

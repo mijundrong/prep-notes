@@ -68,9 +68,11 @@ function collectKnown(data) {
     for (let i = 0; i < parts.length - 1; i++) for (const s of shapes(`${parts[i]}.${parts[i + 1]}`)) out.add(s);
   };
   const skip = new Set((data.defense ?? []).map((d) => d?.no).filter((v) => typeof v === 'string'));
+  // 주소의 숫자(게시물 번호, 한글을 바꾼 %ED%85%9C 같은 바이트)는 사실이 아니라 확정으로 치지 않는다
+  const isUrl = (s) => /^https?:\/\/\S+$/i.test(s);
   const walk = (v) => {
     if (typeof v === 'string') {
-      if (!skip.has(v)) for (const t of numberTokens(v)) addToken(t);
+      if (!skip.has(v) && !isUrl(v)) for (const t of numberTokens(v)) addToken(t);
     } else if (Array.isArray(v)) v.forEach(walk);
     else if (v && typeof v === 'object') Object.values(v).forEach(walk);
   };
